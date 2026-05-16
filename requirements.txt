@@ -1,0 +1,27 @@
+numpy>=1.24
+opencv-python>=4.8
+scipy>=1.10
+tqdm>=4.65
+Pillow>=9.5
+matplotlib>=3.7
+pandas>=2.0
+
+# Deep learning
+torch>=2.2
+torchvision>=0.17
+torchaudio>=2.2
+yacs>=0.1.8
+PyYAML>=6.0
+json-tricks>=3.17
+tensorboardX>=2.6
+timm>=0.9
+einops>=0.7
+
+# Detection and transformer-based backbones
+ultralytics>=8.2
+transformers>=4.40
+huggingface-hub>=0.20
+tokenizers>=0.15
+safetensors>=0.4
+
+# Optional: if using Mamba models, install mamba-ssm separately for your platform

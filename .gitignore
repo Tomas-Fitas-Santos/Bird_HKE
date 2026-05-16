@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs and outputs
+Bird_HKE/logs/
+Bird_HKE/videos_experiments/
+Bird_HKE/experiments/*results*.csv
+Bird_HKE/experiments/hypothesis_*.csv
+
+# Local data and models (not versioned)
+Bird_HKE/videos/
+Bird_HKE/trained_models/
+Bird_HKE/yolov8n.pt
+Bird_HKE/*.pt
+Bird_HKE/*.pth
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

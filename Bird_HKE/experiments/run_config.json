@@ -1,0 +1,68 @@
+{
+    "configs": [
+        "Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_CS.yaml",
+        "Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_OS.yaml",
+        "Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_OS_sum.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_FD_sum.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_concat_gate.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_OS_concat_gate.yaml",
+        "Bird_HKE/experiments/HR_Mamba/hr_mamba_FD_concat_gate.yaml",
+        "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_CS.yaml",
+        "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_OS.yaml",
+        "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_FD.yaml",
+        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_CS.yaml",
+        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_OS.yaml",
+        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_FD.yaml",
+        "Bird_HKE/experiments/VHR_BirdPose/vhr_b_CS.yaml",
+        "Bird_HKE/experiments/VHR_BirdPose/vhr_b_OS.yaml",
+        "Bird_HKE/experiments/VHR_BirdPose/vhr_b_FD.yaml"
+    ],
+    "videos": [
+        {
+            "video": "Bird_HKE/videos/annotated_videos/ColumbaPalumbus/ColumbaPalumbus.mp4",
+            "gt": "Bird_HKE/videos/annotated_videos/ColumbaPalumbus/annot/ColumbaPalumbus.json"
+        },
+        {
+            "video": "Bird_HKE/videos/annotated_videos/FalcoSubbuteo/FalcoSubbuteo.mp4",
+            "gt": "Bird_HKE/videos/annotated_videos/FalcoSubbuteo/annot/FalcoSubbuteo.json"
+        },
+        {
+            "video": "Bird_HKE/videos/annotated_videos/ThaluraniaFurcata/ThaluraniaFurcata.mp4",
+            "gt": "Bird_HKE/videos/annotated_videos/ThaluraniaFurcata/annot/ThaluraniaFurcata.json"
+        },
+        {
+            "video": "Bird_HKE/videos/annotated_videos/TytoAlba/TytoAlba.mp4",
+            "gt": "Bird_HKE/videos/annotated_videos/TytoAlba/annot/TytoAlba.json"
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/CorvusCorone.mp4",
+            "gt": null
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/SagittariusSerpentarius.mp4",
+            "gt": null
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/GrusGrus.mp4",
+            "gt": null
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/CiconiaCiconia.mp4",
+            "gt": null
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/ActitisHypoleucos.mp4",
+            "gt": null
+        },
+        {
+            "video": "Bird_HKE/videos/non_annotated_videos/ColumbaPalumbus_2.mp4",
+            "gt": null
+        }
+    ],
+    
+    "filter_type": "pose",
+
+    "flags": ["--write_obj", "--write_pose"]
+}
