@@ -37,7 +37,7 @@ def create_logger(cfg, cfg_name, phase='train', root_choice='log'):
     # set up logger
     if not root_output_dir.exists():
         print('=> creating {}'.format(root_output_dir))
-        root_output_dir.mkdir()
+        root_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use the root output directory directly (no per-dataset/model subfolders)
     final_output_dir = root_output_dir

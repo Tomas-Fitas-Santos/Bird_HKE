@@ -8,7 +8,6 @@ Usage:
 """
 import json
 import sys
-import os
 import csv
 import subprocess
 import argparse

@@ -4,17 +4,18 @@
 # Written by Bin Xiao (Bin.Xiao@microsoft.com)
 # ------------------------------------------------------------------------------
 
+# This file is adapted from the original codebase of Simple Baselines for Human Pose Estimation and Tracking, which is licensed under the MIT License.
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-import math
 import logging
 import os
 import json_tricks as json
 from collections import OrderedDict
 import json
 import numpy as np
-from scipy.io import loadmat, savemat
+from scipy.io import savemat
 import os
 import sys
 import re

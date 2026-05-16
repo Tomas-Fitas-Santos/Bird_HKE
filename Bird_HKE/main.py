@@ -3,7 +3,6 @@ Bird Pose Estimation Pipeline
 Main entry point for video processing with object detection and pose estimation.
 """
 
-import sys
 import re
 import argparse
 import json
@@ -15,7 +14,7 @@ from pathlib import Path
 from lib.config import cfg, update_config
 from models import get_pose_net
 from lib.utilities.utilities import get_model_summary
-from tools.utils import read_video_frames, write_video_from_frames
+from tools.utils import read_video_frames
 from tools.utils import get_yolo_model
 from tools.bird_detector import BirdDetector
 from tools.pose_estimator import PoseEstimator

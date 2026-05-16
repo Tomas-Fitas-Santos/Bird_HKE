@@ -4,6 +4,8 @@
 # Written by Bin Xiao (Bin.Xiao@microsoft.com)
 # ------------------------------------------------------------------------------
 
+# This file is adapted from the original codebase of Simple Baselines for Human Pose Estimation and Tracking, which is licensed under the MIT License. 
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -11,8 +13,6 @@ from __future__ import print_function
 import argparse
 import time
 import os
-import pprint
-import shutil
 import re
 
 import torch

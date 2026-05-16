@@ -4,7 +4,6 @@ Handles YOLO-based bird detection and bounding box filtering.
 """
 
 import numpy as np
-import cv2
 from pathlib import Path
 from lib.config import cfg
 

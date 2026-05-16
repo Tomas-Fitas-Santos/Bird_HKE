@@ -11,7 +11,7 @@ from pathlib import Path
 
 from lib.config import cfg
 from lib.core.function import get_final_preds
-from core.inference import reset_score_stats, print_score_stats
+from lib.core.inference import reset_score_stats, print_score_stats
 from lib.utilities.transforms import get_affine_transform
 from .pose_filters import PoseFilter, KalmanPoseFilter, CustomFilter
 from .utils import box_to_center_scale, DrawHeadPose
