@@ -1,0 +1,6 @@
+[submodule "Bird_HKE/lib/cocoapi"]
+	path = Bird_HKE/lib/cocoapi
+	url = https://github.com/cocodataset/cocoapi.git
+[submodule "MambaVision"]
+	path = MambaVision
+	url = https://github.com/NVlabs/MambaVision.git
