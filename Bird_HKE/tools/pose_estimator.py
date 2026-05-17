@@ -13,7 +13,7 @@ from lib.config import cfg
 from lib.core.function import get_final_preds
 from lib.core.inference import reset_score_stats, print_score_stats
 from lib.utilities.transforms import get_affine_transform
-from .pose_filters import PoseFilter, KalmanPoseFilter, CustomFilter
+from .pose_filters import Validation_Smoothing_Filter, One_Euro_Custom_Filter
 from .utils import box_to_center_scale, DrawHeadPose
 from .utils import calculate_angular_displacement
 import torchvision.transforms as transforms
@@ -33,7 +33,7 @@ class PoseEstimator:
     NUM_KEYPOINTS = 4  # Head, LeftEye, RightEye, Beak
     
     def __init__(self, pose_model, device, results_dir, fps, total_time,
-                 filter_type='kalman', filter_mode='offline',
+                 filter_type='one_euro', filter_mode='offline',
                  bbox_expand=1.0):
         """
         Initialize pose estimator.
@@ -44,7 +44,7 @@ class PoseEstimator:
             results_dir: Directory for results
             fps: Video frame rate
             total_time: Total video duration
-            filter_type: 'pose', 'kalman', 'custom', or 'none' (default: 'kalman')
+            filter_type: 'val_smooth', 'one_euro', or 'none' (default: 'one_euro')
             filter_mode: 'online' or 'offline' (default: 'offline')
         """
         self.model = pose_model
@@ -57,31 +57,27 @@ class PoseEstimator:
         # Filter configuration
         self.filter_type = filter_type.lower()
         self.filter_mode = filter_mode.lower()
-        if self.filter_type in ('custom') and self.filter_mode != 'offline':
-            print("Custom filter only supports offline mode. Switching to offline.")
+        if self.filter_type in ('one_euro',) and self.filter_mode != 'offline':
+            print("one_euro filter only supports offline mode. Switching to offline.")
             self.filter_mode = 'offline'
         
         # Initialize filters based on configuration
         if self.filter_type == 'none':
             self.filter = None
             print("No filtering applied. Final poses are initial poses.")
-        elif self.filter_type == 'pose':
-            self.filter = PoseFilter()
-            print(f"Using PoseFilter in {self.filter_mode} mode")
-        elif self.filter_type == 'kalman':
-            self.filter = KalmanPoseFilter(num_joints=self.NUM_KEYPOINTS)
-            print(f"Using KalmanFilter in {self.filter_mode} mode")
-        elif self.filter_type in ('custom', 'stage1', 'confidence'):
-            self.filter = CustomFilter(fps=self.fps)
-            print(f"Using CustomFilter in {self.filter_mode} mode")
+        elif self.filter_type == 'val_smooth':
+            self.filter = Validation_Smoothing_Filter()
+            print(f"Using Validation_Smoothing_Filter in {self.filter_mode} mode")
+        elif self.filter_type in ('one_euro', 'stage1', 'confidence'):
+            self.filter = One_Euro_Custom_Filter(fps=self.fps)
+            print(f"Using One_Euro_Custom_Filter in {self.filter_mode} mode")
         else:
             raise ValueError(
-                f"Unknown filter_type: {filter_type}. Use 'pose', 'kalman', 'custom', or 'none'."
+                f"Unknown filter_type: {filter_type}. Use 'val_smooth', 'one_euro', or 'none'."
             )
         
         # Keep separate reference for backward compatibility
-        self.pose_filter = PoseFilter() if self.filter_type == 'pose' else None
-        self.kalman_filter = self.filter if self.filter_type == 'kalman' else None
+        self.pose_filter = Validation_Smoothing_Filter() if self.filter_type == 'val_smooth' else None
         
         # Statistics tracking
         self.stats = {
@@ -125,7 +121,7 @@ class PoseEstimator:
             self._process_offline(frames, bboxes, results, write_initial)
         
         # Update statistics
-        if self.filter_type == 'pose' and self.pose_filter:
+        if self.filter_type == 'val_smooth' and self.pose_filter:
             self.stats['drift_errors'] = self.pose_filter.drift_count
             self.stats['flicker_corrections'] = self.pose_filter.flicker_count
             print(f"Drift errors removed: {self.stats['drift_errors']}")
@@ -161,16 +157,15 @@ class PoseEstimator:
                     pose_final = pose_init
                     score_filtered = score_init
                     score_final = score_init
-                elif self.filter_type == 'pose':
-                    # PoseFilter: filter + smooth
+                elif self.filter_type == 'val_smooth':
+                    # Validation_Smoothing_Filter: filter + smooth
                     pose_filtered, score_filtered = self.filter.filter_pose(
                         pose_init, prev_filtered, score_init, frame_idx
                     )
                     pose_final, score_final = self.filter.smooth_pose(
                         pose_filtered, prev_filtered, score_filtered
                     )
-                else:  # kalman
-                    # KalmanFilter online mode
+                else:  # one_euro
                     pose_final, score_final, _ = self.filter.online_filter_pose(
                         pose_init, score_init, frame, frame_idx
                     )
@@ -247,19 +242,12 @@ class PoseEstimator:
         if self.filter_type == 'none':
             filtered_poses = all_poses
             filtered_scores = all_scores
-        elif self.filter_type == 'pose':
-            # Apply PoseFilter offline (frame by frame with full context)
+        elif self.filter_type == 'val_smooth':
+            # Apply Validation_Smoothing_Filter offline (frame by frame with full context)
             filtered_poses, filtered_scores = self._apply_pose_filter_offline(
                 all_poses, all_scores
             )
-        elif self.filter_type == 'kalman':
-            # Apply Kalman filter offline with RTS smoothing
-            filtered_poses = self.filter.offline_smooth_sequence(
-                poses=all_poses,
-                scores=all_scores
-            )
-            filtered_scores = all_scores  # Scores remain the same
-        elif self.filter_type in ('custom', 'stage1', 'confidence'):
+        elif self.filter_type in ('one_euro', 'stage1', 'confidence'):
             # Stage-1: high-confidence smoothing
             stage1_poses = self.filter.smooth_high_confidence(
                 poses=all_poses,
@@ -278,7 +266,7 @@ class PoseEstimator:
             filtered_scores = all_scores
         else:
             raise ValueError(
-                f"Unknown filter_type: {self.filter_type}. Use 'pose', 'kalman', 'custom', or 'none'."
+                f"Unknown filter_type: {self.filter_type}. Use 'val_smooth', 'one_euro', or 'none'."
             )
         
         # Generate visualization frames and store results
@@ -311,7 +299,7 @@ class PoseEstimator:
         print(f"Offline filtering complete! Processed {len(frames)} frames.")
     
     def _apply_pose_filter_offline(self, all_poses, all_scores):
-        """Apply PoseFilter to entire sequence (offline mode)."""
+        """Apply Validation_Smoothing_Filter to entire sequence (offline mode)."""
         filtered_poses = []
         filtered_scores = []
         prev_filtered = None

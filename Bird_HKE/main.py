@@ -332,8 +332,8 @@ def parse_args():
                        help='Enable pose estimation and save results')
     parser.add_argument('--annotation', action='store_true',
                        help='Save per-frame images and annotations to videos/annot/<video_title>.json')
-    parser.add_argument('--filter_type', type=str, default='custom',
-                       choices=['pose', 'kalman', 'custom', 'none'],
+    parser.add_argument('--filter_type', type=str, default='one_euro',
+                       choices=['val_smooth', 'one_euro', 'none'],
                        help='Pose filter type to use')
     parser.add_argument('--filter_mode', type=str, default='offline',
                        choices=['online', 'offline'],
@@ -346,7 +346,7 @@ def parse_args():
                        help='Modify config options from command line')
     
     args = parser.parse_args()
-    
+
     # Required by supporting codebase
     args.modelDir = ''
     args.logDir = ''

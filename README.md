@@ -1,6 +1,13 @@
 # Bird_HKE
 Related code from the work titled: "Bird Head Keypoint Estimation for Archosaur Motion Insights". (Paper currently under review)
 
+## Technical setup used in this work
+
+- CUDA version: 12.8
+- GPUs used:
+  - NVIDIA GeForce RTX 5060: training of smaller models (HRNet, HR-MambaViT, HR-Mamba) and all evaluations.
+  - NVIDIA H100: training of larger models only (VHR-BirdPose, HR-MambaVision).
+
 ## License and third-party code
 
 This repository contains a mix of:
@@ -31,28 +38,64 @@ For path-level details and attribution, see `THIRD_PARTY_NOTICES.md`.
 
 To keep the repository lightweight and code-focused, these are excluded:
 
-- `Bird_HKE/videos/` (input videos and annotations)
-- `Bird_HKE/trained_models/` (trained checkpoints)
+- `BirdGaze_v2/` (dataset used for training and evaluation)
+- `Bird_HKE/trained_models/` (all trained models for this work)
 - `Bird_HKE/logs/` and `Bird_HKE/videos_experiments/` (generated outputs)
 - Large binary weights (`*.pt`, `*.pth`)
 
 Create these folders locally and place your own data/models before running experiments.
 
+### BirdGaze_v2 dataset details
+
+BirdGaze_v2 includes:
+
+- Full Original Dataset (FD): complete original annotations.
+- Corrected Subset (CS): manually corrected subset for improved annotation quality.
+- Original Subset (OS): same subset as CS but with original (uncorrected) annotations.
+- eBird evaluation videos and associated annotations.
+- eBird images/videos used in this work.
+
+External-source media policy:
+
+- eBird-origin media is distributed in BirdGaze_v2.
+- Animal Kingdom, Birdsnap, and NABirds media are not redistributed; users must obtain them from original sources and follow their licenses.
+
+For complete dataset structure and reconstruction steps, see the dataset README at `BirdGaze_v2/README.md`.
+
+Download links:
+
+- BirdGaze_v2 dataset (Zenodo): https://doi.org/10.5281/zenodo.20241043
+- Trained models (Google Drive): https://example.com/bird_hke_trained_models
+
 ## 1) Environment setup
+
+This project was developed with Conda environments and validated on Linux-based systems.
+
+- Linux: supported/recommended.
+- Windows: use WSL (Windows Subsystem for Linux) as an alternative.
+- macOS: WSL is not available on macOS; Linux compatibility is not guaranteed.
 
 From the `GITHUB_REPO` root:
 
 ```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux/macOS
-source .venv/bin/activate
+conda create -n bird_hke python=3.12 -y
+conda activate bird_hke
 
+# Install PyTorch stack for your specific system/CUDA first.
+# Example for CUDA 12.8:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# Then install the remaining project dependencies.
 pip install -r requirements.txt
 ```
 
-If you use Mamba-based models, also install `mamba-ssm` for your CUDA/PyTorch platform.
+Important compatibility note:
+
+- PyTorch packages (`torch`, `torchvision`, `torchaudio`) are system-dependent (OS, CUDA, driver), so install them according to your platform.
+- `mamba-ssm` depends on the installed PyTorch version and CUDA toolchain, so install a compatible release for your environment.
+- Mamba-SSM release list: https://github.com/state-spaces/mamba/releases
+
+For Mamba-based models, install `mamba-ssm` after PyTorch is installed and verified.
 
 ## 2) Train a new model
 
@@ -110,9 +153,9 @@ Use `main.py` when you want one specific experiment:
 ```bash
 python Bird_HKE/main.py \
   --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_CS.yaml \
-  --video Bird_HKE/videos/video_annotations/ColumbaPalumbus/ColumbaPalumbus.mp4 \
-  --gt Bird_HKE/videos/video_annotations/ColumbaPalumbus/annot/ColumbaPalumbus.json \
-  --write_obj --write_pose --filter_type pose
+  --video BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/ColumbaPalumbus.mp4 \
+  --gt BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/annot/ColumbaPalumbus.json \
+  --write_obj --write_pose --filter_type one_euro
 ```
 
 You can omit `--gt` for videos without ground-truth annotations.
@@ -120,9 +163,23 @@ You can omit `--gt` for videos without ground-truth annotations.
 ## Expected local layout for running experiments
 
 ```text
-GITHUB_REPO/
+Bird_HKE_REPOSITORY/
   READ_ME.md
   requirements.txt
+  BirdGaze_v2/                     # create locally (download from Zenodo)
+    README.md
+    birdgaze_full_dataset/
+      annot/
+      images/
+    birdgaze_corrected_subset/
+      annot/
+      images/
+    birdgaze_original_subset/
+      annot/
+      images/
+    eBird_videos_eval/
+      annotated_videos/
+      non_annotated_videos/
   Bird_HKE/
     main.py
     run_all.py
@@ -131,7 +188,6 @@ GITHUB_REPO/
     lib/
     models/
     dataset/
-    videos/            # create locally
     trained_models/    # create locally
 ```
 
@@ -141,6 +197,10 @@ GITHUB_REPO/
 
   - MambaVision (NVIDIA): https://github.com/nvlabs/mambavision
 
+  We also acknowledge and thank the authors of Mamba:
+
+  - Mamba-SSM: https://github.com/state-spaces/mamba
+
   In this repository, HR-MambaVision refers to our own integration and experimentation code built for this work.
 
   We also acknowledge the original VHR-BirdPose authors whose code we adapted for the VHR-BirdPose branch:
@@ -148,3 +208,5 @@ GITHUB_REPO/
   - VHR-BirdPose: https://github.com/LuoXishuang0712/VHR-BirdPose
 
   The VHR-BirdPose-related files in this repository preserve their upstream notices and remain subject to the licenses of their original components.
+
+If you encounter any issues during environment setup or while using the code, please contact the authors at tomas.santos.work2002@gmail.com or tomas.dos.santos@tecnico.ulisboa.pt.

@@ -231,7 +231,7 @@ def main():
     configs = run_cfg["configs"]
     videos  = run_cfg["videos"]
     flags   = run_cfg.get("flags", [])
-    filter_type = run_cfg.get("filter_type", "custom")
+    filter_type = run_cfg.get("filter_type", "one_euro")
 
     total = len(configs) * len(videos)
     print(f"=== {total} runs ({len(configs)} configs × {len(videos)} videos) ===\n")

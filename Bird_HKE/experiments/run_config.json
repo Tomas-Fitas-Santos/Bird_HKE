@@ -21,48 +21,47 @@
     ],
     "videos": [
         {
-            "video": "BirdGaze_v2/eBird_video_eval/annotated_videos/ColumbaPalumbus/ColumbaPalumbus.mp4",
-            "gt": "BirdGaze_v2/eBird_video_eval/annotated_videos/ColumbaPalumbus/annot/ColumbaPalumbus.json"
+            "video": "BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/ColumbaPalumbus.mp4",
+            "gt": "BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/annot/ColumbaPalumbus.json"
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/annotated_videos/FalcoSubbuteo/FalcoSubbuteo.mp4",
-            "gt": "BirdGaze_v2/eBird_video_eval/annotated_videos/FalcoSubbuteo/annot/FalcoSubbuteo.json"
+            "video": "BirdGaze_v2/eBird_videos_eval/annotated_videos/FalcoSubbuteo/FalcoSubbuteo.mp4",
+            "gt": "BirdGaze_v2/eBird_videos_eval/annotated_videos/FalcoSubbuteo/annot/FalcoSubbuteo.json"
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/annotated_videos/ThaluraniaFurcata/ThaluraniaFurcata.mp4",
-            "gt": "BirdGaze_v2/eBird_video_eval/annotated_videos/ThaluraniaFurcata/annot/ThaluraniaFurcata.json"
+            "video": "BirdGaze_v2/eBird_videos_eval/annotated_videos/ThaluraniaFurcata/ThaluraniaFurcata.mp4",
+            "gt": "BirdGaze_v2/eBird_videos_eval/annotated_videos/ThaluraniaFurcata/annot/ThaluraniaFurcata.json"
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/annotated_videos/TytoAlba/TytoAlba.mp4",
-            "gt": "BirdGaze_v2/eBird_video_eval/annotated_videos/TytoAlba/annot/TytoAlba.json"
+            "video": "BirdGaze_v2/eBird_videos_eval/annotated_videos/TytoAlba/TytoAlba.mp4",
+            "gt": "BirdGaze_v2/eBird_videos_eval/annotated_videos/TytoAlba/annot/TytoAlba.json"
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/CorvusCorone.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/CorvusCorone.mp4",
             "gt": null
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/SagittariusSerpentarius.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/SagittariusSerpentarius.mp4",
             "gt": null
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/GrusGrus.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/GrusGrus.mp4",
             "gt": null
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/CiconiaCiconia.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/CiconiaCiconia.mp4",
             "gt": null
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/ActitisHypoleucos.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/ActitisHypoleucos.mp4",
             "gt": null
         },
         {
-            "video": "BirdGaze_v2/eBird_video_eval/non_annotated_videos/ColumbaPalumbus_2.mp4",
+            "video": "BirdGaze_v2/eBird_videos_eval/non_annotated_videos/ColumbaPalumbus_2.mp4",
             "gt": null
         }
     ],
-    
-    "filter_type": "pose",
+    "filter_type": "one_euro",
 
     "flags": ["--write_obj", "--write_pose"]
 }

@@ -1,15 +1,14 @@
 """
 Pose Filtering Module
-Implements pose validation, drift detection, and Kalman filtering.
+Implements validation smoothing and One-Euro-based custom filtering.
 """
 
 import numpy as np
 import copy
 import math
-from lib.filters.kalman import KalmanFilter2D
 from .utils import calculate_distance, calculate_angular_displacement
 
-class PoseFilter:
+class Validation_Smoothing_Filter:
     """Filters pose estimations to remove drift and errors."""
     
     def __init__(self):
@@ -237,243 +236,6 @@ class PoseFilter:
         """Check if point has valid coordinates."""
         return point is not None and len(point) >= 2 and point[0] != 0 and point[1] != 0
     
-
-class KalmanPoseFilter:
-    """
-    Per-joint confidence-aware Kalman pose smoother with RTS backward pass
-    and rigid head alignment per frame.
-    """
-
-    def __init__(self, num_joints):
-        self.num_joints = num_joints
-        self.filters = [
-            KalmanFilter2D(
-                dt=1.0,
-                var_process_pos=1e-1,
-                var_process_vel=5.0,
-                var_meas=18.0,
-                q_adapt_alpha=0.5,
-            )
-            for _ in range(num_joints)
-        ]
-        # Default template for rigid head alignment (optional, can update)
-        self.head_template = None  # shape: (num_joints, 2)
-
-    # -------------------------------
-    # Automatic template estimation
-    # -------------------------------
-    def estimate_head_template(self, poses, scores=None, conf_thresh=0.5):
-        """
-        Estimate a canonical head shape from a sequence of poses.
-
-        Args:
-            poses: list of (num_joints, 2)
-            scores: optional list of per-joint confidences
-            conf_thresh: minimum confidence to include joint in template
-
-        Returns:
-            template: (num_joints, 2) array
-        """
-        if poses is None or len(poses) == 0:
-            return None
-
-        T = len(poses)
-        accum = np.zeros((self.num_joints, 2), dtype=np.float32)
-        counts = np.zeros((self.num_joints,), dtype=np.float32)
-
-        for t in range(T):
-            pose_t = np.asarray(poses[t], dtype=np.float32)
-            score_t = scores[t] if scores is not None else None
-
-            for j in range(self.num_joints):
-                conf = 1.0
-                if score_t is not None:
-                    try:
-                        conf = float(score_t[j][0])
-                    except Exception:
-                        try:
-                            conf = float(score_t[j]) if np.isscalar(score_t[j]) else 1.0
-                        except Exception:
-                            conf = 1.0
-                if conf < conf_thresh or np.any(np.isnan(pose_t[j])):
-                    continue
-
-                accum[j] += pose_t[j] * conf
-                counts[j] += conf
-
-        # Compute weighted average
-        template = np.zeros((self.num_joints, 2), dtype=np.float32)
-        for j in range(self.num_joints):
-            if counts[j] > 0:
-                template[j] = accum[j] / counts[j]
-            else:
-                template[j] = accum[j]  # zero fallback
-
-        self.head_template = template
-        return template
-
-    # -------------------------------------------------
-    # ONLINE FILTERING (frame-by-frame)
-    # -------------------------------------------------
-    def online_filter_pose(self, pose, score, frame, frame_idx):
-        if pose is None:
-            filtered = []
-            for kf in self.filters:
-                if kf.initialized:
-                    kf.predict()
-                    x = kf.get_state()
-                    filtered.append([x[0], x[1]])
-                else:
-                    filtered.append([0.0, 0.0])
-            filtered_pose = [np.asarray(filtered)]
-            frame_vis = self._draw_kalman_pose(frame, filtered_pose, frame_idx)
-            return filtered_pose, score, frame_vis
-
-        measurements = np.asarray(pose).squeeze()
-        filtered = []
-
-        for j, kf in enumerate(self.filters):
-            meas = measurements[j]
-            conf = 1.0
-            if score is not None:
-                try:
-                    conf = float(score[j][0])
-                except Exception:
-                    conf = float(score[j]) if np.isscalar(score[j]) else 1.0
-
-            kf.predict()
-            kf.update(meas, meas_conf=conf)
-            x = kf.get_state()
-            filtered.append([x[0], x[1]])
-
-        filtered_pose = [np.asarray(filtered)]
-        frame_vis = self._draw_kalman_pose(frame, filtered_pose, frame_idx)
-        return filtered_pose, score, frame_vis
-
-    # -------------------------------------------------
-    # OFFLINE SMOOTHING (full sequence) + rigid alignment
-    # -------------------------------------------------
-    def offline_smooth_sequence(self, poses, scores=None, rigid_align=True, conf_thresh=0.1):
-        """
-        Args:
-            poses: list of (num_joints, 2)
-            scores: optional list of per-joint confidences
-            rigid_align: whether to enforce rigid head shape per frame
-            conf_thresh: minimum confidence to include joint in rigid alignment
-
-        Returns:
-            smoothed_poses: list of (num_joints, 2)
-        """
-        if poses is None or len(poses) == 0:
-            return []
-
-        T = len(poses)
-        print(f"Applying Kalman RTS smoothing to {T} poses...")
-        if scores is None:
-            scores = [None] * T
-
-        # ---- Initialize filters with first valid pose ----
-        for t in range(T):
-            if poses[t] is not None:
-                pose_t = np.asarray(poses[t])
-                for j, kf in enumerate(self.filters):
-                    kf.initialize(pose_t[j])
-                break
-
-        # ---- Forward pass ----
-        for t in range(T):
-            # Skip None poses - just predict and store
-            if poses[t] is None:
-                for kf in self.filters:
-                    pred = kf.predict()
-                    if kf.initialized:
-                        kf._store_filtered()  # Store predicted state as filtered
-                continue
-            
-            pose_t = np.asarray(poses[t])
-            score_t = scores[t]
-            
-            for j, kf in enumerate(self.filters):
-                meas = pose_t[j]
-                conf = 1.0
-                if score_t is not None:
-                    try:
-                        conf = float(score_t[j][0])
-                    except Exception:
-                        conf = float(score_t[j]) if np.isscalar(score_t[j]) else 1.0
-                kf.predict()
-                kf.update(meas, meas_conf=conf)
-
-        # ---- RTS backward smoothing per joint ----
-        smoothed_per_joint = []
-        for kf in self.filters:
-            x_smooth, _ = kf.smooth()
-            smoothed_per_joint.append(x_smooth[:, :2])
-
-        # ---- Optional rigid head alignment per frame ----
-        smoothed_poses = []
-        for t in range(T):
-            frame = np.zeros((self.num_joints, 2), dtype=np.float32)
-            # Collect smoothed positions for this frame
-            frame[:, :] = np.array([smoothed_per_joint[j][t] for j in range(self.num_joints)])
-
-            if rigid_align and self.head_template is not None:
-                # Weighted Procrustes
-                confs = np.ones(self.num_joints, dtype=np.float32)
-                if scores[t] is not None:
-                    for j in range(self.num_joints):
-                        try:
-                            conf = float(scores[t][j][0])
-                        except Exception:
-                            conf = float(scores[t][j]) if np.isscalar(scores[t][j]) else 1.0
-                        confs[j] = np.clip(conf, conf_thresh, 1.0)
-
-                frame = self._rigid_align(self.head_template, frame, confs)
-
-            smoothed_poses.append(frame)
-
-        return smoothed_poses
-
-    # -------------------------------------------------
-    def _rigid_align(self, template_pts, target_pts, weights):
-        """
-        Weighted 2D rigid Procrustes alignment:
-        Solve for R, T minimizing sum_i weights[i] * || R * template[i] + T - target[i] ||^2
-        """
-        W = np.diag(weights)
-        # Weighted centroids
-        centroid_template = np.sum(W @ template_pts, axis=0) / np.sum(weights)
-        centroid_target = np.sum(W @ target_pts, axis=0) / np.sum(weights)
-
-        # Center points
-        X = template_pts - centroid_template
-        Y = target_pts - centroid_target
-
-        # Weighted covariance
-        C = X.T @ W @ Y
-
-        # SVD
-        U, _, Vt = np.linalg.svd(C)
-        R = Vt.T @ U.T
-
-        # Correct reflection
-        if np.linalg.det(R) < 0:
-            Vt[-1, :] *= -1
-            R = Vt.T @ U.T
-
-        # Apply transform
-        aligned = (R @ X.T).T + centroid_target
-        return aligned
-
-    # -------------------------------------------------
-    def _draw_kalman_pose(self, frame, pose, frame_idx):
-        from .utils import DrawHeadPose
-        frame_copy = frame.copy()
-        if pose is not None:
-            for kpt in pose:
-                frame_copy = DrawHeadPose(kpt, frame_copy)
-        return frame_copy
-
 
 # --------------------------------------------------------------------------------------
 
@@ -1019,7 +781,7 @@ class GeometricSkeletonCorrector:
 # --------------------------------------------------------------------------------------
 
 
-class CustomFilter:
+class One_Euro_Custom_Filter:
     """
     Stage-1 smoothing using a One-Euro-style filter
     adapted for confidence-weighted pose trajectories.
