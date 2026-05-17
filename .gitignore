@@ -13,6 +13,7 @@ Bird_HKE/logs/
 Bird_HKE/videos_experiments/
 Bird_HKE/experiments/*results*.csv
 Bird_HKE/experiments/hypothesis_*.csv
+Bird_HKE/*.zip
 
 # Local data and models (not versioned)
 BirdGaze_v2/
