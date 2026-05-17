@@ -78,7 +78,7 @@ This project was developed with Conda environments and validated on Linux-based 
 From the `GITHUB_REPO` root:
 
 ```bash
-conda create -n bird_hke python=3.12 -y
+conda create -n bird_hke python=3.10 -y
 conda activate bird_hke
 
 # Install PyTorch stack for your specific system/CUDA first.
