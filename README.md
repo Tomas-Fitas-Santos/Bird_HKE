@@ -102,13 +102,13 @@ For Mamba-based models, install `mamba-ssm` after PyTorch is installed and verif
 Training is config-driven. Choose one YAML in `Bird_HKE/experiments/...` and run:
 
 ```bash
-python Bird_HKE/tools/train.py --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_CS.yaml
+python Bird_HKE/tools/train.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml
 ```
 
 For finetuning (if your workflow uses it):
 
 ```bash
-python Bird_HKE/tools/finetune.py --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_CS.yaml
+python Bird_HKE/tools/finetune.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml
 ```
 
 Notes:
@@ -152,7 +152,7 @@ Use `main.py` when you want one specific experiment:
 
 ```bash
 python Bird_HKE/main.py \
-  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_CS.yaml \
+  --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml \
   --video BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/ColumbaPalumbus.mp4 \
   --gt BirdGaze_v2/eBird_videos_eval/annotated_videos/ColumbaPalumbus/annot/ColumbaPalumbus.json \
   --write_obj --write_pose --filter_type one_euro
