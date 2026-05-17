@@ -12,8 +12,7 @@ DATASET:
   FLIP: true
   NUM_JOINTS_HALF_BODY: 4
   PROB_HALF_BODY: -1.0
-  # Make dataset root relative so users can set `DATA_DIR` for a new machine.
-  ROOT: birdgaze_full_dataset
+  ROOT: BirdGaze_v2/birdgaze_full_dataset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
   TEST_SET: test
@@ -23,7 +22,6 @@ MODEL:
   NAME: pose_hrnet
   NUM_JOINTS: 4
   PRETRAINED: r''
-  #PRETRAINED: path/to/pretrained.pth  # set relative to DATA_DIR or absolute
   IMAGE_SIZE:
   - 256
   - 256

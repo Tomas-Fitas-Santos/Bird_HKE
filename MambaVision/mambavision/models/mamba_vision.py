@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# This module is adapted from the NVIDIA MambaVision repository.
+# Original copyright and license information retained below.
+#
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # NVIDIA CORPORATION and its licensors retain all intellectual property
@@ -7,7 +10,6 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
-
 
 import torch
 import torch.nn as nn

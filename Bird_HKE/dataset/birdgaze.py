@@ -108,9 +108,49 @@ class BirdGazeDataset(JointsDataset):
             image_dir = 'images.zip@' if self.data_format == 'zip' else 'images'
             # sanitize image_name separators (some annotations use Windows backslashes)
             image_name = image_name.replace('\\', '/')
-            full_image = os.path.join(self.root, image_dir, image_name)
-            # normalize Windows-style path to WSL /mnt form if needed
-            full_image = _normalize_wsl_path(full_image)
+
+            # Build candidate paths and silently support known Animal Kingdom
+            # naming variants used across dataset releases.
+            image_candidates = [image_name]
+            is_animal_kingdom = (
+                image_name.startswith('Animal_Kingdom/')
+                or image_name.startswith('Animal Kingdom/')
+            )
+            if is_animal_kingdom:
+                ak_variants = [
+                    image_name,
+                    image_name.replace('Animal_Kingdom/', 'Animal Kingdom/'),
+                    image_name.replace('Animal Kingdom/', 'Animal_Kingdom/')
+                ]
+                for variant in ak_variants:
+                    image_candidates.append(variant)
+                    image_candidates.append(
+                        re.sub(r'_f(\d+\.[A-Za-z0-9]+)$', r'_t\1', variant)
+                    )
+
+            # keep unique candidates while preserving order
+            seen = set()
+            image_candidates = [
+                c for c in image_candidates if not (c in seen or seen.add(c))
+            ]
+
+            full_image = None
+            if self.data_format == 'zip':
+                full_image = os.path.join(self.root, image_dir, image_candidates[0])
+                full_image = _normalize_wsl_path(full_image)
+            else:
+                for candidate in image_candidates:
+                    candidate_full = os.path.join(self.root, image_dir, candidate)
+                    candidate_full = _normalize_wsl_path(candidate_full)
+                    if os.path.exists(candidate_full):
+                        full_image = candidate_full
+                        break
+
+                # Fall back to the canonical annotation path if no local match is found.
+                if full_image is None:
+                    full_image = os.path.join(self.root, image_dir, image_candidates[0])
+                    full_image = _normalize_wsl_path(full_image)
+
             gt_db.append(
                 {
                     'image': full_image,

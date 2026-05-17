@@ -12,9 +12,7 @@ DATASET:
   FLIP: true
   NUM_JOINTS_HALF_BODY: 4
   PROB_HALF_BODY: -1.0
-  # Leave DATA_DIR empty or set via CLI/ENV; make dataset root relative so
-  # it is joined with DATA_DIR at runtime. Example: --dataDir /mnt/data/project
-  ROOT: birdgaze_corrected_subset
+  ROOT: BirdGaze_v2/birdgaze_corrected_subset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
   TEST_SET: test

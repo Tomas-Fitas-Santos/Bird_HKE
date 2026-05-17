@@ -12,7 +12,7 @@ DATASET:
   FLIP: true
   NUM_JOINTS_HALF_BODY: 4
   PROB_HALF_BODY: -1.0
-  ROOT: birdgaze_original_subset
+  ROOT: BirdGaze_v2/birdgaze_original_subset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
   TEST_SET: test

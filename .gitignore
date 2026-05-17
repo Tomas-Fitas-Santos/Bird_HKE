@@ -15,9 +15,7 @@ Bird_HKE/experiments/*results*.csv
 Bird_HKE/experiments/hypothesis_*.csv
 
 # Local data and models (not versioned)
-birdgaze_corrected_subset/
-birdgaze_original_subset/
-birdgaze_full_dataset/
+BirdGaze_v2/
 Bird_HKE/videos/
 Bird_HKE/trained_models/
 Bird_HKE/yolov8n.pt

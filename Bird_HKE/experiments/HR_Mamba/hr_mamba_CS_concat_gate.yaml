@@ -12,7 +12,7 @@ DATASET:
   FLIP: true
   NUM_JOINTS_HALF_BODY: 4
   PROB_HALF_BODY: -1.0
-  ROOT: birdgaze_corrected_subset
+  ROOT: BirdGaze_v2/birdgaze_corrected_subset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
   TEST_SET: test
@@ -113,24 +113,6 @@ TRAIN:
   MIN_LR: 1e-5
   CLIP_GRAD_NORM: 1.0
   GRAD_ACCUM_STEPS: 5   # effective batch ~= 12 (micro) x 5 = 60
-  WD: 0.01
-FINETUNE:
-  RESUME_FROM_CKPT: true
-  DATA_DIR: occlusion_FINETUNE_ebird
-  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/HR_MAMBA_concat_gate' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/HR_MAMBA_concat_gate' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/HR_MAMBA_concat_gate' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
-  BATCH_SIZE_PER_GPU: 8
-  SHUFFLE: true
-  BEGIN_EPOCH: 0
-  END_EPOCH: 100
-  OPTIMIZER: adamw
-  LR: 0.0005
-  LR_SCHEDULE: cosine
-  WARMUP_EPOCHS: 5
-  MIN_LR: 1e-5
-  CLIP_GRAD_NORM: 1.0
-  GRAD_ACCUM_STEPS: 8   # effective batch ~= 8 (micro) x 8 = 64
   WD: 0.01
 TEST:
   BATCH_SIZE_PER_GPU: 1
