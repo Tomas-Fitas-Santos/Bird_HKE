@@ -6,7 +6,7 @@ Related code from the work titled: "Bird Head Keypoint Estimation for Archosaur 
 - CUDA version: 12.8
 - GPUs used:
   - NVIDIA GeForce RTX 5060: training of smaller models (HRNet, HR-MambaViT, HR-Mamba) and all evaluations.
-  - NVIDIA H100: training of larger models only ([VHR-BirdPose](https://github.com/LuoXishuang0712/VHR-BirdPose), [HR-MambaVision](https://github.com/nvlabs/mambavision)).
+  - NVIDIA H100: training of larger models only ([VHR-BirdPose](https://github.com/LuoXishuang0712/VHR-BirdPose), HR-MambaVision (integrating [MambaVision](https://github.com/nvlabs/mambavision))).
 
 ## License and third-party code
 
