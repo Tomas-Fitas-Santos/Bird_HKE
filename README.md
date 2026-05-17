@@ -197,11 +197,11 @@ Bird_HKE_REPOSITORY/
 
   - MambaVision (NVIDIA): https://github.com/nvlabs/mambavision
 
+ In this repository, HR-MambaVision refers to our own integration and experimentation code built for this work.
+
   We also acknowledge and thank the authors of Mamba:
 
   - Mamba-SSM: https://github.com/state-spaces/mamba
-
-  In this repository, HR-MambaVision refers to our own integration and experimentation code built for this work.
 
   We also acknowledge the original VHR-BirdPose authors whose code we adapted for the VHR-BirdPose branch:
 
