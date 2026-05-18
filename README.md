@@ -64,8 +64,8 @@ For complete dataset structure and reconstruction steps, see the dataset README 
 
 Download links:
 
-- BirdGaze_v2 dataset (Zenodo): https://doi.org/10.5281/zenodo.20241043
-- Trained models (Google Drive): https://example.com/bird_hke_trained_models (To be updated...)
+- BirdGaze_v2 dataset ([Zenodo](https://doi.org/10.5281/zenodo.20241043))
+- Trained models ([Google Drive](https://drive.google.com/file/d/1p1UCx_fpSFJxBxNxaT0qNn0L7vB-9t_t/view?usp=sharing))
 
 ## 1) Environment setup
 
@@ -93,7 +93,7 @@ Important compatibility note:
 
 - PyTorch packages (`torch`, `torchvision`, `torchaudio`) are system-dependent (OS, CUDA, driver), so install them according to your platform.
 - `mamba-ssm` depends on the installed PyTorch version and CUDA toolchain, so install a compatible release for your environment.
-- Mamba-SSM release list: https://github.com/state-spaces/mamba/releases
+- [Mamba-SSM release list](https://github.com/state-spaces/mamba/releases)
 
 For Mamba-based models, install `mamba-ssm` after PyTorch is installed and verified.
 
@@ -195,17 +195,17 @@ Bird_HKE_REPOSITORY/
 
   We acknowledge and thank the original authors of MambaVision for their open-source release:
 
-  - MambaVision (NVIDIA): https://github.com/nvlabs/mambavision
+  - [MambaVision](https://github.com/nvlabs/mambavision) (NVIDIA)
 
  In this repository, HR-MambaVision refers to our own integration and experimentation code built for this work.
 
   We also acknowledge and thank the authors of Mamba:
 
-  - Mamba-SSM: https://github.com/state-spaces/mamba
+  - [Mamba-SSM](https://github.com/state-spaces/mamba)
 
   We also acknowledge the original VHR-BirdPose authors whose code we adapted for the VHR-BirdPose branch:
 
-  - VHR-BirdPose: https://github.com/LuoXishuang0712/VHR-BirdPose
+  - [VHR-BirdPose](https://github.com/LuoXishuang0712/VHR-BirdPose)
 
   The VHR-BirdPose-related files in this repository preserve their upstream notices and remain subject to the licenses of their original components.
 
