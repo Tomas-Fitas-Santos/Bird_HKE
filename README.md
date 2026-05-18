@@ -137,12 +137,11 @@ python Bird_HKE/run_all.py --config Bird_HKE/experiments/run_config.json
 
 ### Run only selected simulations
 
-Edit `Bird_HKE/experiments/run_config.json`:
+Edit `Bird_HKE/experiments/run_config.json` to customize your experiments:
 
-- Keep only the wanted entries in `configs`
-- Keep only the wanted entries in `videos`
-- Adjust `flags` (for example `--write_obj`, `--write_pose`)
-- Optionally change `filter_type`
+- `configs`: keep only the desired model configurations
+- `videos`: keep only the target video files
+- `filter_type`: optionally specify a motion filter
 
 Then run `python Bird_HKE/run_all.py` again.
 
@@ -188,7 +187,7 @@ Bird_HKE_REPOSITORY/
     lib/
     models/
     dataset/
-    trained_models/    # create locally
+    trained_models/    # create locally (download from Google Drive)
 ```
 
   ## Acknowledgements
