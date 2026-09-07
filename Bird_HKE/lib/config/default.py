@@ -16,10 +16,21 @@ _C.RESUME_FROM_CKPT = False
 _C.PIN_MEMORY = True
 _C.RANK = 0
 
+# Reproducibility controls shared by every training configuration. A single
+# seed drives Python, NumPy, PyTorch, CUDA, and DataLoader worker randomness.
+_C.REPRODUCIBILITY = CN()
+_C.REPRODUCIBILITY.PROTOCOL = 'bird_hke_repro_v1'
+_C.REPRODUCIBILITY.SEED = 2026
+_C.REPRODUCIBILITY.STRICT = True
+_C.REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS = True
+_C.REPRODUCIBILITY.WARN_ONLY = False
+_C.REPRODUCIBILITY.ALLOW_TF32 = False
+_C.REPRODUCIBILITY.MATMUL_PRECISION = 'highest'
+
 # Cudnn related params
 _C.CUDNN = CN()
-_C.CUDNN.BENCHMARK = True
-_C.CUDNN.DETERMINISTIC = False
+_C.CUDNN.BENCHMARK = False
+_C.CUDNN.DETERMINISTIC = True
 _C.CUDNN.ENABLED = True
 
 # common params for NETWORK
@@ -82,7 +93,10 @@ def _build_phase_cfg():
     phase.WARMUP_EPOCHS = 0
     phase.MIN_LR = 0.0
     phase.CLIP_GRAD_NORM = 0.0
-    phase.GRAD_ACCUM_STEPS = 1
+    # A value of zero derives the accumulation count from
+    # EFFECTIVE_BATCH_SIZE / (BATCH_SIZE_PER_GPU * number of GPUs).
+    phase.GRAD_ACCUM_STEPS = 0
+    phase.EFFECTIVE_BATCH_SIZE = 64
 
     phase.BEGIN_EPOCH = 0
     phase.END_EPOCH = 140
@@ -93,8 +107,9 @@ def _build_phase_cfg():
     phase.CKPT_DIR = ''
     phase.LOG_DIR = ''
 
-    phase.BATCH_SIZE_PER_GPU = 32
+    phase.BATCH_SIZE_PER_GPU = 8
     phase.SHUFFLE = True
+    phase.DROP_LAST = False
     return phase
 
 
@@ -222,6 +237,3 @@ _C.DETECTION.MAX_INTERPOLATION_GAP = 2
 # Maximum number of frames at the start/end that may be filled by copying
 # the first/last real detection. Set to 0 to disable endpoint filling.
 _C.DETECTION.MAX_ENDPOINT_FILL = 2
-
-
-

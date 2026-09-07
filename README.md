@@ -105,6 +105,57 @@ Training is config-driven. Choose one YAML in `Bird_HKE/experiments/...` and run
 python Bird_HKE/tools/train.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml
 ```
 
+### Controlled and reproducible training protocol
+
+All experiment YAMLs use the same `bird_hke_repro_v1` protocol. Before
+starting a training campaign, verify them from the repository root:
+
+```bash
+python Bird_HKE/tools/audit_training_protocol.py
+python -m unittest discover -s tests
+```
+
+The shared protocol fixes the following values across architectures:
+
+- input/heatmap size: 256 x 256 / 64 x 64; Gaussian sigma: 2
+- random initialization from scratch (no pretrained checkpoint)
+- RGB input, horizontal flip, 0.25 scale jitter, and 30-degree rotation
+- foreground-weighted, visibility-masked heatmap MSE
+- AdamW, learning rate `5e-4`, weight decay `0.01`
+- 100 epochs, 5 warm-up epochs, cosine decay to `1e-5`
+- gradient clipping at 1.0
+- seed 2026, deterministic PyTorch/cuDNN behavior, and TF32 disabled
+- physical batch size 8 per GPU and effective optimizer batch size 64
+
+The accumulation count is calculated at runtime. For example, one GPU uses
+eight accumulation steps, two GPUs use four, and four GPUs use two. This lets
+larger models run on stronger or multi-GPU machines without changing the
+per-GPU BatchNorm batch or the effective optimizer batch. The effective batch
+must divide exactly; incompatible GPU counts fail before training begins.
+
+Each run writes `resolved_config.yaml` and `environment.json` to its log
+directory. The latter records the Git revision, protocol hash, package/runtime
+versions, GPU names, and resolved batch plan. Checkpoints also contain all RNG
+states and the protocol hash, so an interrupted run resumes from the next epoch
+with the same sampling and augmentation stream. Strict mode rejects legacy or
+incompatible checkpoints instead of silently mixing protocols.
+
+The supplied configs write to new `repro_v1/seed_2026` directories, preserving
+the previously trained models. `TRAIN.RESUME_FROM_CKPT: true` is safe within
+that directory: it resumes only a matching reproducible run. For an independent
+repeat, use another seed and separate output directories. All architectures in
+one comparison must use the same seed set; seeds 2026, 2027, and 2028 are a
+reasonable three-run campaign for reporting mean and standard deviation.
+
+The BirdGaze image split named `test` in the existing dataset layout is used as
+the model-selection validation split during training. It is not claimed as the
+final test set. The held-out external videos remain the final evaluation set.
+
+Deterministic settings and recorded environments make runs scientifically
+reproducible, but bit-for-bit equality between different GPU architectures is
+not guaranteed by CUDA. Comparisons should therefore use the same protocol and
+seed set and report variation across seeds.
+
 For finetuning (if your workflow uses it):
 
 ```bash

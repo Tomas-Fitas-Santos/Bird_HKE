@@ -11,15 +11,15 @@ from core.evaluate import accuracy
 from core.inference import get_final_preds, get_max_preds
 from utilities.transforms import flip_back
 from utilities.vis import save_debug_images
+from utilities.reproducibility import accumulation_group_size
 
 
 logger = logging.getLogger(__name__)
 
 test_epoch = 0
-import os
 
 def train(config, train_loader, model, criterion, optimizer, epoch,
-          output_dir, tb_log_dir, writer_dict):
+          output_dir, tb_log_dir, writer_dict, grad_accum_steps=None):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -28,7 +28,9 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
     # switch to train mode
     model.train()
 
-    accum_steps = int(getattr(config.TRAIN, 'GRAD_ACCUM_STEPS', 1))
+    if grad_accum_steps is None:
+        grad_accum_steps = getattr(config.TRAIN, 'GRAD_ACCUM_STEPS', 1)
+    accum_steps = int(grad_accum_steps)
     if accum_steps < 1:
         accum_steps = 1
     optimizer.zero_grad()
@@ -59,7 +61,10 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
         losses.update(loss.item(), num_images)
 
         # compute gradient and do update step
-        (loss / accum_steps).backward()
+        # The last accumulation group can be shorter than accum_steps. Divide
+        # by its real size so its gradients are not silently underweighted.
+        group_size = accumulation_group_size(i, len(train_loader), accum_steps)
+        (loss / group_size).backward()
         should_step = ((i + 1) % accum_steps == 0) or ((i + 1) == len(train_loader))
         if should_step:
             clip_norm = getattr(config.TRAIN, 'CLIP_GRAD_NORM', 0.0)
@@ -252,7 +257,7 @@ def validate(config, val_loader, val_dataset, model, criterion, output_dir,
                 except Exception:
                     peak_dist = 0.0
                     peak_dist_norm = 0.0
-                msg = 'Test: [{0}/{1}]\t' \
+                msg = 'Validation: [{0}/{1}]\t' \
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t' \
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t' \
                       'Accuracy {acc.val:.3f} ({acc.avg:.3f})\t' \
