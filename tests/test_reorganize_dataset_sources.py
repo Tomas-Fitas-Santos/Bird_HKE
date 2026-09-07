@@ -120,6 +120,28 @@ class ReorganizeDatasetSourcesTests(unittest.TestCase):
             )
             self.assertEqual(output_train[0]['image'], 'Animal_Kingdom/QWERTY/animal.jpg')
             self.assertEqual(completed['counts']['output_images'], 5)
+            self.assertEqual(
+                completed['counts']['output_images_by_source'],
+                {
+                    'Animal_Kingdom': 1,
+                    'eBird': 1,
+                    'NABirds': 1,
+                    'Birdsnap': 2,
+                },
+            )
+            self.assertEqual(
+                completed['counts']['copied_this_run_by_source'],
+                completed['counts']['output_images_by_source'],
+            )
+            self.assertEqual(
+                completed['counts']['resumed_existing_images_by_source'],
+                {
+                    'Animal_Kingdom': 0,
+                    'eBird': 0,
+                    'NABirds': 0,
+                    'Birdsnap': 0,
+                },
+            )
             self.assertTrue((output / 'source_format_manifest.json').is_file())
             self.assertFalse(output.with_name(output.name + '.partial').exists())
 

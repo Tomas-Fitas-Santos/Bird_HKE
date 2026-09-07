@@ -322,15 +322,19 @@ def create_dataset(
 
     copied = 0
     resumed = 0
+    copied_by_source: Counter = Counter()
+    resumed_by_source: Counter = Counter()
     for entry in _progress(entries, len(entries), 'Copying images', show_progress):
         destination = staging_root / 'images' / Path(entry['new_relative'])
         if destination.exists() and resume:
             if destination.is_file() and destination.stat().st_size == entry['size']:
                 resumed += 1
+                resumed_by_source[entry['source_name']] += 1
                 continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(entry['source_path'], destination)
         copied += 1
+        copied_by_source[entry['source_name']] += 1
 
     for filename, records in rewritten.items():
         _write_json(staging_root / 'annot' / filename, records)
@@ -355,13 +359,28 @@ def create_dataset(
             f'Output verification failed; the partial output contains '
             f'{len(unexpected_outputs)} unexpected image(s):\n{preview}'
         )
+    output_images_by_source = Counter(
+        PurePosixPath(relative).parts[0] for relative in actual_outputs
+    )
 
     completed = copy.deepcopy(manifest)
     completed['created_utc'] = datetime.now(timezone.utc).isoformat()
     completed['output_dataset'] = str(output_root)
     completed['counts']['copied_this_run'] = copied
     completed['counts']['resumed_existing_images'] = resumed
+    completed['counts']['copied_this_run_by_source'] = {
+        source_name: copied_by_source.get(source_name, 0)
+        for source_name in SOURCE_NAMES
+    }
+    completed['counts']['resumed_existing_images_by_source'] = {
+        source_name: resumed_by_source.get(source_name, 0)
+        for source_name in SOURCE_NAMES
+    }
     completed['counts']['output_images'] = len(entries)
+    completed['counts']['output_images_by_source'] = {
+        source_name: output_images_by_source.get(source_name, 0)
+        for source_name in SOURCE_NAMES
+    }
     completed['counts']['output_bytes'] = sum(entry['size'] for entry in entries)
     completed['output_annotations'] = {
         filename: {
@@ -400,6 +419,17 @@ def print_summary(manifest: dict, output_root: Path, wrote: bool) -> None:
         print(f'  Images in output:         {counts["output_images"]}')
         print(f'  Copied this run:          {counts["copied_this_run"]}')
         print(f'  Resumed existing images:  {counts["resumed_existing_images"]}')
+        print('  Verified output images by source:')
+        for source_name in SOURCE_NAMES:
+            output_images = counts['output_images_by_source'].get(source_name, 0)
+            copied_images = counts['copied_this_run_by_source'].get(source_name, 0)
+            resumed_images = counts['resumed_existing_images_by_source'].get(
+                source_name, 0
+            )
+            print(
+                f'    {source_name:15s} {output_images:7d} output '
+                f'({copied_images:7d} copied, {resumed_images:7d} resumed)'
+            )
         print('  Integrity checks:         PASS')
         print(f'Created dataset: {output_root}')
     else:
