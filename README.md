@@ -108,7 +108,44 @@ python Bird_HKE/tools/train.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_s
 ### Controlled and reproducible training protocol
 
 All experiment YAMLs use the same `bird_hke_repro_v1` protocol. Before
-starting a training campaign, verify them from the repository root:
+training, first generate the folder-stratified image splits. The source dataset
+must contain `annot/train.json`, `annot/test.json`, `annot/val.json`, and an
+`images/` directory. Paths in each annotation record are interpreted relative
+to `images/` and must not start with `images/`.
+
+Preview the split without writing files:
+
+```bash
+python Bird_HKE/tools/create_reproducible_splits.py \
+  --dataset-root BirdGaze_v2/birdgaze_corrected_subset
+```
+
+After reviewing the counts, write `train.json`, `val.json`,
+`calibration.json`, and `split_manifest.json` to the new
+`annot_repro_v1/` directory:
+
+```bash
+python Bird_HKE/tools/create_reproducible_splits.py \
+  --dataset-root BirdGaze_v2/birdgaze_corrected_subset \
+  --write
+```
+
+Run the same command for the original subset and full dataset. Corrected and
+original subsets that contain the same relative image paths receive identical
+memberships because splitting is deterministic and independent of the original
+JSON order. The original `annot/` files are never overwritten.
+
+The splitter pools the three old partitions and stratifies by the complete
+parent directory of each image. Folders containing 1-4 images remain entirely
+in training; folders with 5-9 images contribute one image to whichever held-out
+partition has the larger global deficit; folders with at least 10 images follow
+the 80/10/10 ratio with at least one validation and one calibration image.
+
+The experiment YAMLs read training and validation annotations from
+`annot_repro_v1/`. The calibration partition is reserved for uncertainty
+calibration and is not consumed by the base training loop.
+
+Before starting a training campaign, verify the protocol from the repository root:
 
 ```bash
 python Bird_HKE/tools/audit_training_protocol.py
@@ -147,9 +184,9 @@ repeat, use another seed and separate output directories. All architectures in
 one comparison must use the same seed set; seeds 2026, 2027, and 2028 are a
 reasonable three-run campaign for reporting mean and standard deviation.
 
-The BirdGaze image split named `test` in the existing dataset layout is used as
-the model-selection validation split during training. It is not claimed as the
-final test set. The held-out external videos remain the final evaluation set.
+The generated image `val` split is used only for model selection during
+training. It is not claimed as the final test set. The held-out external videos
+remain the final evaluation set.
 
 Deterministic settings and recorded environments make runs scientifically
 reproducible, but bit-for-bit equality between different GPU architectures is

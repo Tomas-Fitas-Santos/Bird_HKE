@@ -61,6 +61,7 @@ _C.LOSS.MSE_WEIGHT = 1.0
 _C.DATASET = CN()
 _C.DATASET.NAME_ = 'birdgaze.'  #'coco.' 'ak.'
 _C.DATASET.ROOT = ''
+_C.DATASET.ANNOT_DIR = 'annot'
 _C.DATASET.DATASET = ''
 _C.DATASET.TRAIN_SET = 'train'
 _C.DATASET.TEST_SET = 'valid'

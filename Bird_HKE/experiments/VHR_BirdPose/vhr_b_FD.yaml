@@ -16,6 +16,7 @@ REPRODUCIBILITY:
   MATMUL_PRECISION: highest
 
 DATASET:
+  ANNOT_DIR: annot_repro_v1
   COLOR_RGB: true
   DATASET: 'BirdGazeDataset'
   DATA_FORMAT: jpg
@@ -25,7 +26,7 @@ DATASET:
   ROOT: BirdGaze_v2/birdgaze_full_dataset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
-  TEST_SET: test
+  TEST_SET: val
   TRAIN_SET: train
 MODEL:
   INIT_WEIGHTS: true

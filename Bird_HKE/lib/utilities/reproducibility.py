@@ -96,7 +96,7 @@ def _file_sha256(path: str) -> Optional[str]:
 
 def dataset_annotation_hashes(cfg: Any) -> Dict[str, Optional[str]]:
     """Fingerprint the train and validation annotations without using paths."""
-    annotation_dir = os.path.join(cfg.DATASET.ROOT, 'annot')
+    annotation_dir = os.path.join(cfg.DATASET.ROOT, cfg.DATASET.ANNOT_DIR)
     return {
         split: _file_sha256(os.path.join(annotation_dir, f'{name}.json'))
         for split, name in (
@@ -129,7 +129,7 @@ def training_protocol(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
         'dataset': {
             key: _plain(getattr(cfg.DATASET, key))
             for key in (
-                'DATASET', 'TRAIN_SET', 'TEST_SET', 'DATA_FORMAT', 'FLIP',
+                'DATASET', 'ANNOT_DIR', 'TRAIN_SET', 'TEST_SET', 'DATA_FORMAT', 'FLIP',
                 'SCALE_FACTOR', 'ROT_FACTOR', 'PROB_HALF_BODY',
                 'NUM_JOINTS_HALF_BODY', 'COLOR_RGB',
             )
@@ -183,6 +183,9 @@ def environment_report(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
             for index in range(torch.cuda.device_count())
         ]
     protocol = training_protocol(cfg, plan)
+    calibration_path = os.path.join(
+        cfg.DATASET.ROOT, cfg.DATASET.ANNOT_DIR, 'calibration.json'
+    )
     packages = {}
     for package in (
         'torch', 'torchvision', 'numpy', 'opencv-python', 'scipy', 'timm',
@@ -195,6 +198,7 @@ def environment_report(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
     return {
         'protocol_hash': protocol_hash(protocol),
         'protocol': protocol,
+        'calibration_annotation_sha256': _file_sha256(calibration_path),
         'resolved_batch': asdict(plan),
         'git_revision': _git_revision(),
         'platform': platform.platform(),
