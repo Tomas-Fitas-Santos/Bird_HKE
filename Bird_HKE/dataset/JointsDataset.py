@@ -42,6 +42,7 @@ class JointsDataset(Dataset):
         else:
             self.output_path = cfg.OUTPUT_DIR if cfg.OUTPUT_DIR else os.path.join(os.getcwd(), 'output')
         self.data_format = cfg.DATASET.DATA_FORMAT
+        self.annotation_dir = cfg.DATASET.ANNOT_DIR
 
         self.scale_factor = cfg.DATASET.SCALE_FACTOR
         self.rotation_factor = cfg.DATASET.ROT_FACTOR

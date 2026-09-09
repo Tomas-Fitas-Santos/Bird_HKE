@@ -1,26 +1,38 @@
 CUDNN:
-  BENCHMARK: true
-  DETERMINISTIC: false
+  BENCHMARK: false
+  DETERMINISTIC: true
   ENABLED: true
 GPUS: [0] #(0,1) ## Change based on number of GPUs
 WORKERS: 3
 PRINT_FREQ: 1
 
+REPRODUCIBILITY:
+  PROTOCOL: bird_hke_repro_v1
+  SEED: 2026
+  STRICT: true
+  USE_DETERMINISTIC_ALGORITHMS: true
+  WARN_ONLY: false
+  ALLOW_TF32: false
+  MATMUL_PRECISION: highest
+
 DATASET:
-  COLOR_RGB: false
+  ANNOT_DIR: annot_repro_v1
+  COLOR_RGB: true
   DATASET: 'BirdGazeDataset'
+  DATA_FORMAT: jpg
   FLIP: true
   NUM_JOINTS_HALF_BODY: 4
   PROB_HALF_BODY: -1.0
   ROOT: BirdGaze_v2/birdgaze_original_subset
   ROT_FACTOR: 30
   SCALE_FACTOR: 0.25
-  TEST_SET: test
+  TEST_SET: val
   TRAIN_SET: train
 MODEL:
   INIT_WEIGHTS: true
   NAME: pose_hr_mamba_concat_gate
   NUM_JOINTS: 4
+  TARGET_TYPE: gaussian
   PRETRAINED: r''
   IMAGE_SIZE:
   - 256
@@ -100,43 +112,47 @@ LOSS:
   USE_TARGET_WEIGHT: true
 TRAIN:
   RESUME_FROM_CKPT: true
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate' # Where to save/load model checkpoints and where to save final model
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate' # Where to save training logs
-  BATCH_SIZE_PER_GPU: 12
+  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026' # Where to save/load model checkpoints and where to save final model
+  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026' # Where to save training logs
+  BATCH_SIZE_PER_GPU: 8
+  EFFECTIVE_BATCH_SIZE: 64
   SHUFFLE: true
+  DROP_LAST: false
   BEGIN_EPOCH: 0
   END_EPOCH: 100
   OPTIMIZER: adamw
   LR: 0.0005
   LR_SCHEDULE: cosine
   WARMUP_EPOCHS: 5
-  MIN_LR: 1e-5
+  MIN_LR: 1.0e-5
   CLIP_GRAD_NORM: 1.0
-  GRAD_ACCUM_STEPS: 6   # effective batch ~= 12 (micro) x 6 = 72
+  GRAD_ACCUM_STEPS: 0   # automatically derived from effective batch and GPU count
   WD: 0.01
 FINETUNE:
   RESUME_FROM_CKPT: true
   DATA_DIR: occlusion_FINETUNE_ebird
-  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
-  BATCH_SIZE_PER_GPU: 12
+  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
+  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
+  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
+  BATCH_SIZE_PER_GPU: 8
+  EFFECTIVE_BATCH_SIZE: 64
   SHUFFLE: true
+  DROP_LAST: false
   BEGIN_EPOCH: 0
   END_EPOCH: 100
   OPTIMIZER: adamw
   LR: 0.0005
   LR_SCHEDULE: cosine
   WARMUP_EPOCHS: 5
-  MIN_LR: 1e-5
+  MIN_LR: 1.0e-5
   CLIP_GRAD_NORM: 1.0
-  GRAD_ACCUM_STEPS: 6   # effective batch ~= 12 (micro) x 6 = 72
+  GRAD_ACCUM_STEPS: 0   # automatically derived from effective batch and GPU count
   WD: 0.01
 TEST:
   BATCH_SIZE_PER_GPU: 1
   DETECT_MODEL_FILE: 'Bird_HKE/trained_models/YOLOv8Bird.pt'
-  POSE_MODEL_FILE: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/model_best.pth'
-  OUTPUT_DIR: 'Bird_HKE/videos_experiments/BirdGaze_Original_Subset/HR_MAMBA_concat_gate'  # Where to save testing results
+  POSE_MODEL_FILE: 'Bird_HKE/trained_models/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026/model_best.pth'
+  OUTPUT_DIR: 'Bird_HKE/videos_experiments/BirdGaze_Original_Subset/HR_MAMBA_concat_gate/repro_v1/seed_2026'  # Where to save testing results
   FLIP_TEST: true
   POST_PROCESS: true
   SHIFT_HEATMAP: true

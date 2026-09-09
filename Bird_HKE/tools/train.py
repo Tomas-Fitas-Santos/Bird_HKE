@@ -11,9 +11,14 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
+import json
 import time
 import os
 import re
+
+# Deterministic cuBLAS requires this before any imported CUDA extension can
+# initialize a context.
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 
 import torch
 import torch.nn.parallel
@@ -23,7 +28,6 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 
-import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -42,6 +46,14 @@ from lib.utilities.utilities import get_optimizer
 from lib.utilities.utilities import save_checkpoint
 from lib.utilities.utilities import create_logger
 from lib.utilities.utilities import get_model_summary
+from lib.utilities.reproducibility import capture_rng_state
+from lib.utilities.reproducibility import environment_report
+from lib.utilities.reproducibility import protocol_hash
+from lib.utilities.reproducibility import resolve_batch_plan
+from lib.utilities.reproducibility import restore_rng_state
+from lib.utilities.reproducibility import seed_everything
+from lib.utilities.reproducibility import seed_worker
+from lib.utilities.reproducibility import training_protocol
 
 
 from models import get_pose_net
@@ -109,9 +121,11 @@ def _adapt_state_dict_for_model(model, state_dict):
     return adapted
 
 
-def _load_state_dict_with_report(model, state_dict, logger, context='checkpoint'):
+def _load_state_dict_with_report(
+    model, state_dict, logger, context='checkpoint', strict=False
+):
     state_dict = _adapt_state_dict_for_model(model, state_dict)
-    incompatible = model.load_state_dict(state_dict, strict=False)
+    incompatible = model.load_state_dict(state_dict, strict=strict)
 
     missing = list(getattr(incompatible, 'missing_keys', []))
     unexpected = list(getattr(incompatible, 'unexpected_keys', []))
@@ -130,6 +144,32 @@ def main():
 
     update_config(cfg, args)
 
+    use_cuda = torch.cuda.is_available() and len(cfg.GPUS) > 0
+    if use_cuda:
+        available_devices = torch.cuda.device_count()
+        invalid_devices = [gpu for gpu in cfg.GPUS if gpu < 0 or gpu >= available_devices]
+        if invalid_devices:
+            raise ValueError(
+                f'Configured GPU ids {invalid_devices} are unavailable; '
+                f'this host exposes {available_devices} CUDA device(s).'
+            )
+        torch.cuda.set_device(cfg.GPUS[0])
+    active_devices = len(cfg.GPUS) if use_cuda else 1
+    batch_plan = resolve_batch_plan(cfg.TRAIN, active_devices)
+    seed_everything(
+        cfg.REPRODUCIBILITY.SEED,
+        deterministic_algorithms=cfg.REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS,
+        warn_only=cfg.REPRODUCIBILITY.WARN_ONLY,
+    )
+
+    # cudnn related setting
+    cudnn.benchmark = cfg.CUDNN.BENCHMARK
+    torch.backends.cudnn.deterministic = cfg.CUDNN.DETERMINISTIC
+    torch.backends.cudnn.enabled = cfg.CUDNN.ENABLED
+    torch.backends.cuda.matmul.allow_tf32 = cfg.REPRODUCIBILITY.ALLOW_TF32
+    torch.backends.cudnn.allow_tf32 = cfg.REPRODUCIBILITY.ALLOW_TF32
+    torch.set_float32_matmul_precision(cfg.REPRODUCIBILITY.MATMUL_PRECISION)
+
     logger, final_output_dir, tb_log_dir = create_logger(
         cfg = cfg, cfg_name = 'config', root_choice='log')
     # Determine base directories from the config so everything is configurable
@@ -142,28 +182,41 @@ def main():
     else:
         ckpt_dir = base_dir
     os.makedirs(ckpt_dir, exist_ok=True)
-    
-    logger.info(cfg)
 
-    # cudnn related setting
-    cudnn.benchmark = cfg.CUDNN.BENCHMARK
-    torch.backends.cudnn.deterministic = cfg.CUDNN.DETERMINISTIC
-    torch.backends.cudnn.enabled = cfg.CUDNN.ENABLED
+    run_environment = environment_report(cfg, batch_plan)
+    current_protocol = training_protocol(cfg, batch_plan)
+    current_protocol_hash = protocol_hash(current_protocol)
+    os.makedirs(base_dir, exist_ok=True)
+    with open(os.path.join(base_dir, 'resolved_config.yaml'), 'w', encoding='utf-8') as handle:
+        handle.write(cfg.dump())
+    with open(os.path.join(base_dir, 'environment.json'), 'w', encoding='utf-8') as handle:
+        json.dump(run_environment, handle, indent=2, sort_keys=True)
+
+    logger.info(cfg)
+    logger.info(
+        'Resolved batch: %d device(s) x %d samples x %d accumulation = %d',
+        batch_plan.devices,
+        batch_plan.batch_size_per_device,
+        batch_plan.accumulation_steps,
+        batch_plan.effective_batch_size,
+    )
+    logger.info('Training protocol hash: %s', current_protocol_hash)
 
     
     model = get_pose_net(cfg, is_train=True)
     # log model summary, params, flops and memory usage
     try:
         # prepare device and dummy input
-        use_cuda = torch.cuda.is_available() and len(cfg.GPUS) > 0
         device = torch.device('cuda' if use_cuda else 'cpu')
         img_h, img_w = cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE') else (256, 256)
         dummy = torch.randn(1, 3, img_h, img_w).to(device)
 
         # move model to device for accurate memory/summary
         model.to(device)
+        model.eval()
 
         summary = get_model_summary(model, dummy, verbose=False)
+        model.train()
         logger.info('%s', summary)
         # Save model summary and config to the root LOG_DIR (no subfolders)
         try:
@@ -236,21 +289,52 @@ def main():
         ])
     )    
 
+    train_generator = torch.Generator()
+    train_generator.manual_seed(int(cfg.REPRODUCIBILITY.SEED))
+    validation_generator = torch.Generator()
+    validation_generator.manual_seed(int(cfg.REPRODUCIBILITY.SEED) + 1)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=cfg.TRAIN.BATCH_SIZE_PER_GPU*len(cfg.GPUS),
+        batch_size=batch_plan.global_micro_batch,
         shuffle=cfg.TRAIN.SHUFFLE,
         num_workers=cfg.WORKERS,
-        pin_memory=cfg.PIN_MEMORY
+        pin_memory=cfg.PIN_MEMORY,
+        drop_last=cfg.TRAIN.DROP_LAST,
+        worker_init_fn=seed_worker,
+        generator=train_generator,
     )  
 
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset,
-        batch_size=cfg.TEST.BATCH_SIZE_PER_GPU*len(cfg.GPUS),
+        batch_size=cfg.TEST.BATCH_SIZE_PER_GPU*active_devices,
         shuffle=False,
         num_workers=cfg.WORKERS,
-        pin_memory=cfg.PIN_MEMORY
+        pin_memory=cfg.PIN_MEMORY,
+        worker_init_fn=seed_worker,
+        generator=validation_generator,
     )      
+
+    processed_samples = len(train_dataset)
+    if cfg.TRAIN.DROP_LAST:
+        processed_samples = (
+            processed_samples // batch_plan.global_micro_batch
+        ) * batch_plan.global_micro_batch
+    final_optimizer_batch = processed_samples % batch_plan.effective_batch_size
+    if final_optimizer_batch == 0 and processed_samples > 0:
+        final_optimizer_batch = batch_plan.effective_batch_size
+    run_environment['dataset_sizes'] = {
+        'train': len(train_dataset),
+        'validation': len(valid_dataset),
+    }
+    run_environment['micro_batches_per_epoch'] = len(train_loader)
+    run_environment['training_samples_processed_per_epoch'] = processed_samples
+    run_environment['optimizer_steps_per_epoch'] = (
+        len(train_loader) + batch_plan.accumulation_steps - 1
+    ) // batch_plan.accumulation_steps
+    run_environment['final_optimizer_batch_size'] = final_optimizer_batch
+    with open(os.path.join(base_dir, 'environment.json'), 'w', encoding='utf-8') as handle:
+        json.dump(run_environment, handle, indent=2, sort_keys=True)
 
 
 
@@ -286,22 +370,49 @@ def main():
         except Exception as e:
             logger.error("Failed to load checkpoint '%s': %s", checkpoint_file, e)
             raise
+        saved_protocol_hash = checkpoint.get('training_protocol_hash')
+        if cfg.REPRODUCIBILITY.STRICT:
+            if saved_protocol_hash is None:
+                raise RuntimeError(
+                    'The checkpoint predates the reproducible-training protocol. '
+                    'Start a fresh run directory, or set '
+                    'REPRODUCIBILITY.STRICT false only for a legacy continuation.'
+                )
+            if saved_protocol_hash != current_protocol_hash:
+                raise RuntimeError(
+                    'Checkpoint training protocol does not match this run. '
+                    f'checkpoint={saved_protocol_hash}, current={current_protocol_hash}. '
+                    'Use a fresh run directory for a changed experiment.'
+                )
         begin_epoch = checkpoint.get('epoch', 0)
         best_perf = checkpoint.get('perf', 0.0)
+        best_epoch = checkpoint.get('best_epoch')
+        best_name_values = checkpoint.get('best_name_values')
         last_epoch = checkpoint.get('epoch', begin_epoch)
         # load state dict if present
         if 'state_dict' in checkpoint:
-            _load_state_dict_with_report(model, checkpoint['state_dict'], logger, context=checkpoint_file)
+            _load_state_dict_with_report(
+                model,
+                checkpoint['state_dict'],
+                logger,
+                context=checkpoint_file,
+                strict=cfg.REPRODUCIBILITY.STRICT,
+            )
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError('Checkpoint is missing model state.')
 
         if 'optimizer' in checkpoint:
             try:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             except ValueError as e:
-                logger.warning(
-                    "Could not load optimizer state from '%s' (%s). "
-                    "Continuing with freshly initialized optimizer state.",
-                    checkpoint_file, e
-                )
+                if cfg.REPRODUCIBILITY.STRICT:
+                    raise RuntimeError(
+                        'Could not restore optimizer state reproducibly.'
+                    ) from e
+                logger.warning("Could not load optimizer state from '%s' (%s).",
+                               checkpoint_file, e)
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError('Checkpoint is missing optimizer state.')
         logger.info("=> loaded checkpoint '{}' (epoch {})".format(
             checkpoint_file, checkpoint['epoch']))
 
@@ -334,10 +445,33 @@ def main():
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             logger.info('=> restored lr_scheduler state from checkpoint')
         except Exception as e:
+            if cfg.REPRODUCIBILITY.STRICT:
+                raise RuntimeError(
+                    'Could not restore learning-rate scheduler state reproducibly.'
+                ) from e
             logger.warning(
                 'Could not restore lr_scheduler state from checkpoint (%s). '
                 'Scheduler will continue from last_epoch=%d.',
                 e, last_epoch
+            )
+    elif resume_from_ckpt and cfg.REPRODUCIBILITY.STRICT:
+        raise RuntimeError('Checkpoint is missing learning-rate scheduler state.')
+
+    if resume_from_ckpt:
+        if 'rng_state' in checkpoint:
+            restore_rng_state(checkpoint['rng_state'], train_generator)
+            validation_state = checkpoint.get('validation_loader_generator_state')
+            if validation_state is not None:
+                validation_generator.set_state(validation_state)
+            elif cfg.REPRODUCIBILITY.STRICT:
+                raise RuntimeError(
+                    'Checkpoint has no validation DataLoader RNG state.'
+                )
+            logger.info('=> restored Python, NumPy, PyTorch, CUDA, and DataLoader RNG state')
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError(
+                'Checkpoint has no RNG state and cannot be resumed reproducibly. '
+                'Use a fresh run directory or disable strict mode for a legacy continuation.'
             )
 
     def _rewrite_train_logs(
@@ -377,7 +511,7 @@ def main():
             if summary_idx is not None:
                 lines = lines[:summary_idx]
 
-            header = 'epoch\thead\teyes\tmouth\tmean\ttrain_time_s\ttest_time_s'
+            header = 'epoch\thead\teyes\tmouth\tmean\ttrain_time_s\tvalidation_time_s'
             if not lines or not lines[0].startswith('epoch\t'):
                 lines.insert(0, header)
 
@@ -420,7 +554,8 @@ def main():
         # train for one epoch (measure time)
         t0 = time.time()
         train_acc = train(cfg, train_loader, model, criterion, optimizer, epoch,
-                          debug_images_directory, None, None)
+                          debug_images_directory, None, None,
+                          grad_accum_steps=batch_plan.accumulation_steps)
         train_time = time.time() - t0
         epoch_train_times.append(train_time)
 
@@ -463,9 +598,16 @@ def main():
             'model': cfg.MODEL.NAME,
             'state_dict': model.state_dict(),
             'best_state_dict': model.module.state_dict(),
-            'perf': perf_indicator,
+            'perf': best_perf,
+            'validation_perf': perf_indicator,
+            'best_epoch': best_epoch,
+            'best_name_values': best_name_values,
             'optimizer': optimizer.state_dict(),
             'lr_scheduler': lr_scheduler.state_dict(),
+            'rng_state': capture_rng_state(train_generator),
+            'validation_loader_generator_state': validation_generator.get_state(),
+            'training_protocol': current_protocol,
+            'training_protocol_hash': current_protocol_hash,
         }, best_model, ckpt_dir)
 
     final_model_state_file = os.path.join(ckpt_dir, 'final_model.pth')

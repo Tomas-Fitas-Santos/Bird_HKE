@@ -61,7 +61,7 @@ class BirdGazeDataset(JointsDataset):
     def _get_db(self):
         # Create train/val split
         file_name = os.path.join(
-            self.root, 'annot', self.image_set+'.json' 
+            self.root, self.annotation_dir, self.image_set+'.json'
         )
         # Normalize Windows-style paths when running under WSL
         def _normalize_wsl_path(p):
@@ -181,7 +181,7 @@ class BirdGazeDataset(JointsDataset):
         threshold = 0.05
 
         gt_file = os.path.join(cfg.DATASET.ROOT,
-                               'annot',
+                               cfg.DATASET.ANNOT_DIR,
                                '{}.json' #gt_{}.json'
                                .format(cfg.DATASET.TEST_SET)
                                )
