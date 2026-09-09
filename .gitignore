@@ -17,7 +17,7 @@ Bird_HKE/*.zip
 
 # Training datasets
 BirdGaze_v2/
-BirdGaze_Full_Dataset/
+birdgaze_full_dataset/
 birdgaze_original_subset/
 birdgaze_corrected_subset/
 
