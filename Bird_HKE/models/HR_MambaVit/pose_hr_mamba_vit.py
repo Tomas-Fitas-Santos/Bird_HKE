@@ -136,7 +136,7 @@ class HRMambaViTPose(PoseHighResolutionNet):
         x_att = self.att_fit_out(x_att)
         y_list[0] = self.feature_fuse(y_list[0], x_att)
 
-        return self.final_layer(y_list[0])
+        return self._make_pose_output(y_list[0])
 
     def init_weights(self, pretrained=''):
         super().init_weights(pretrained)

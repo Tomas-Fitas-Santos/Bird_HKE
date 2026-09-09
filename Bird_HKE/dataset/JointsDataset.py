@@ -58,6 +58,9 @@ class JointsDataset(Dataset):
         self.use_different_joints_weight = cfg.LOSS.USE_DIFFERENT_JOINTS_WEIGHT
         self.joints_weight = 1
 
+        self.uncertainty_enabled = bool(cfg.UNCERTAINTY.ENABLED)
+        self.synthetic_occlusion = cfg.UNCERTAINTY.SYNTHETIC_OCCLUSION
+
         self.transform = transform
         self.db = []
 
@@ -141,6 +144,14 @@ class JointsDataset(Dataset):
 
         joints = db_rec['joints_3d']
         joints_vis = db_rec['joints_3d_vis']
+        coordinate_valid = db_rec.get('joints_3d_valid', joints_vis).copy()
+        visibility_known = db_rec.get(
+            'visibility_known', np.ones((self.num_joints, 1), dtype=np.float32)
+        ).copy()
+        visibility_target = db_rec.get(
+            'visibility_target', joints_vis[:, :1]
+        ).copy()
+        synthetic_occluded = np.zeros((self.num_joints, 1), dtype=np.float32)
 
         c = db_rec['center']
         s = db_rec['scale']
@@ -169,10 +180,10 @@ class JointsDataset(Dataset):
                         c = c - np.array([x1, y1], dtype=c.dtype)
 
         if self.is_train:
-            if (np.sum(joints_vis[:, 0]) > self.num_joints_half_body
+            if (np.sum(coordinate_valid[:, 0]) > self.num_joints_half_body
                 and np.random.rand() < self.prob_half_body):
                 c_half_body, s_half_body = self.half_body_transform(
-                    joints, joints_vis
+                    joints, coordinate_valid
                 )
 
                 if c_half_body is not None and s_half_body is not None:
@@ -186,8 +197,11 @@ class JointsDataset(Dataset):
 
             if self.flip and random.random() <= 0.5:
                 data_numpy = data_numpy[:, ::-1, :]
-                joints, joints_vis = fliplr_joints(
-                    joints, joints_vis, data_numpy.shape[1], self.flip_pairs)
+                joints, coordinate_valid = fliplr_joints(
+                    joints, coordinate_valid, data_numpy.shape[1], self.flip_pairs)
+                self._swap_joint_rows(joints_vis)
+                self._swap_joint_rows(visibility_known)
+                self._swap_joint_rows(visibility_target)
                 c[0] = data_numpy.shape[1] - c[0] - 1
 
         trans = get_affine_transform(c, s, r, self.image_size)
@@ -199,14 +213,28 @@ class JointsDataset(Dataset):
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0))
 
+        for i in range(self.num_joints):
+            if coordinate_valid[i, 0] > 0.0:
+                joints[i, 0:2] = affine_transform(joints[i, 0:2], trans)
+
+        if (
+            self.is_train
+            and self.uncertainty_enabled
+            and bool(self.synthetic_occlusion.ENABLED)
+        ):
+            input, synthetic_occluded = self._apply_synthetic_occlusion(
+                input,
+                joints,
+                coordinate_valid,
+                joints_vis,
+                visibility_known,
+                visibility_target,
+            )
+
         if self.transform:
             input = self.transform(input)
 
-        for i in range(self.num_joints):
-            if joints_vis[i, 0] > 0.0:
-                joints[i, 0:2] = affine_transform(joints[i, 0:2], trans)
-
-        target, target_weight = self.generate_target(joints, joints_vis)
+        target, target_weight = self.generate_target(joints, coordinate_valid)
 
         target = torch.from_numpy(target)
         target_weight = torch.from_numpy(target_weight)
@@ -217,6 +245,11 @@ class JointsDataset(Dataset):
             'imgnum': imgnum,
             'joints': joints,
             'joints_vis': joints_vis,
+            'coordinate_valid': coordinate_valid[:, :1],
+            'visibility_known': visibility_known,
+            'visibility_target': visibility_target,
+            'synthetic_occluded': synthetic_occluded,
+            'source': db_rec.get('source', 'unknown'),
             'center': c,
             'scale': s,
             'rotation': r,
@@ -225,6 +258,75 @@ class JointsDataset(Dataset):
         }
 
         return input, target, target_weight, meta
+
+    def _swap_joint_rows(self, values):
+        for left, right in self.flip_pairs:
+            values[[left, right]] = values[[right, left]]
+
+    def _apply_synthetic_occlusion(
+        self,
+        image,
+        joints,
+        coordinate_valid,
+        joints_vis,
+        visibility_known,
+        visibility_target,
+    ):
+        """Mask landmark-centred rectangles without discarding coordinates."""
+        occluded = np.zeros((self.num_joints, 1), dtype=np.float32)
+        probability = float(self.synthetic_occlusion.PROBABILITY)
+        if np.random.random() >= probability:
+            return image, occluded
+
+        candidates = np.flatnonzero(coordinate_valid[:, 0] > 0)
+        if candidates.size == 0:
+            return image, occluded
+
+        max_keypoints = max(1, int(self.synthetic_occlusion.MAX_KEYPOINTS))
+        count = min(max_keypoints, candidates.size)
+        selected = np.random.choice(candidates, size=count, replace=False)
+        height, width = image.shape[:2]
+        min_fraction = float(self.synthetic_occlusion.MIN_SIZE_FRACTION)
+        max_fraction = float(self.synthetic_occlusion.MAX_SIZE_FRACTION)
+        if not 0 < min_fraction <= max_fraction <= 1:
+            raise ValueError(
+                'synthetic occlusion fractions must satisfy 0 < min <= max <= 1'
+            )
+
+        fill = np.mean(image.reshape(-1, image.shape[-1]), axis=0)
+        for joint_index in np.atleast_1d(selected):
+            center_x, center_y = joints[int(joint_index), :2]
+            if not (0 <= center_x < width and 0 <= center_y < height):
+                continue
+            box_width = max(
+                1, int(round(width * np.random.uniform(min_fraction, max_fraction)))
+            )
+            box_height = max(
+                1, int(round(height * np.random.uniform(min_fraction, max_fraction)))
+            )
+            x1 = max(0, int(round(center_x - box_width / 2)))
+            y1 = max(0, int(round(center_y - box_height / 2)))
+            x2 = min(width, x1 + box_width)
+            y2 = min(height, y1 + box_height)
+            image[y1:y2, x1:x2] = fill
+
+            # Bird-head landmarks are close together.  If the rectangle also
+            # covers another annotated point, label that point as synthetically
+            # hidden as well instead of creating contradictory supervision.
+            inside = (
+                (coordinate_valid[:, 0] > 0)
+                & (joints[:, 0] >= x1)
+                & (joints[:, 0] < x2)
+                & (joints[:, 1] >= y1)
+                & (joints[:, 1] < y2)
+            )
+            occluded[inside, 0] = 1.0
+
+        affected = occluded[:, 0] > 0
+        joints_vis[affected, :] = 0.0
+        visibility_known[affected, 0] = 1.0
+        visibility_target[affected, 0] = 0.0
+        return image, occluded
 
     def select_data(self, db):
         db_selected = []
@@ -259,14 +361,14 @@ class JointsDataset(Dataset):
         logger.info('=> num selected db: {}'.format(len(db_selected)))
         return db_selected
 
-    def generate_target(self, joints, joints_vis):
+    def generate_target(self, joints, coordinate_valid):
         '''
         :param joints:  [num_joints, 3]
-        :param joints_vis: [num_joints, 3]
-        :return: target, target_weight(1: visible, 0: invisible)
+        :param coordinate_valid: [num_joints, 3]
+        :return: target, target_weight(1: coordinate annotated, 0: absent)
         '''
         target_weight = np.ones((self.num_joints, 1), dtype=np.float32)
-        target_weight[:, 0] = joints_vis[:, 0]
+        target_weight[:, 0] = coordinate_valid[:, 0]
 
         assert self.target_type == 'gaussian', \
             'Only support gaussian map now!'

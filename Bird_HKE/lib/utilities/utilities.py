@@ -123,6 +123,10 @@ def get_model_summary(model, *input_tensors, item_length=26, verbose=False):
                 input = input[0]
             if isinstance(output, (list, tuple)):
                 output = output[0]
+            if isinstance(output, dict):
+                output = output.get(
+                    'probability_maps', output.get('location_logits')
+                )
 
             # Count parameters owned by this module (may be 0); we still
             # compute a global total later from model.parameters() to avoid

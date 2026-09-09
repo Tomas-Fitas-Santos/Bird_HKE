@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import logging
 
+from .uncertainty import ProbabilisticPoseOutput
+
 
 ########################### Building Blocks #################################
 
@@ -332,7 +334,23 @@ class PoseHighResolutionNet(nn.Module):
             padding=1 if extra['FINAL_CONV_KERNEL'] == 3 else 0
         )
 
+        self.uncertainty_enabled = bool(cfg['UNCERTAINTY']['ENABLED'])
+        self.probabilistic_output = None
+        if self.uncertainty_enabled:
+            self.probabilistic_output = ProbabilisticPoseOutput(
+                cfg,
+                in_channels=pre_stage_channels[0],
+                num_joints=cfg['MODEL']['NUM_JOINTS'],
+            )
+
         self.pretrained_layers = extra['PRETRAINED_LAYERS']
+
+    def _make_pose_output(self, features):
+        """Return the Phase-1 tensor or the optional probabilistic bundle."""
+        location_logits = self.final_layer(features)
+        if not self.uncertainty_enabled:
+            return location_logits
+        return self.probabilistic_output(features, location_logits)
 
     def _make_transition_layer(
             self, num_channels_pre_layer, num_channels_cur_layer):
@@ -459,9 +477,7 @@ class PoseHighResolutionNet(nn.Module):
                 x_list.append(y_list[i])
         y_list = self.stage4(x_list)
 
-        x = self.final_layer(y_list[0])
-
-        return x
+        return self._make_pose_output(y_list[0])
 
     def init_weights(self, pretrained=''):
         logger.info('=> init weights from normal distribution')

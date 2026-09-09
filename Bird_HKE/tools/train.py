@@ -39,7 +39,7 @@ warnings.filterwarnings('ignore', category=FutureWarning,
 warnings.filterwarnings('ignore', category=FutureWarning,
                         message='Importing from timm.models.layers is deprecated')
 from lib.config.default import update_config
-from lib.core.loss import JointsMSELoss
+from lib.core.loss import build_pose_criterion
 from lib.core.function import train
 from lib.core.function import validate
 from lib.utilities.utilities import get_optimizer
@@ -263,9 +263,13 @@ def main():
     else:
         model = torch.nn.DataParallel(model, device_ids=cfg.GPUS)
 
-    criterion = JointsMSELoss(
-        use_target_weight=cfg.LOSS.USE_TARGET_WEIGHT
-    ).cuda()
+    criterion_device = torch.device('cuda' if use_cuda else 'cpu')
+    criterion = build_pose_criterion(cfg).to(criterion_device)
+    logger.info(
+        'Uncertainty modelling: %s; criterion: %s',
+        'enabled' if cfg.UNCERTAINTY.ENABLED else 'disabled',
+        criterion.__class__.__name__,
+    )
 
     # Data loading code
     normalize = transforms.Normalize(

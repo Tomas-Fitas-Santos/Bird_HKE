@@ -19,7 +19,7 @@ _C.RANK = 0
 # Reproducibility controls shared by every training configuration. A single
 # seed drives Python, NumPy, PyTorch, CUDA, and DataLoader worker randomness.
 _C.REPRODUCIBILITY = CN()
-_C.REPRODUCIBILITY.PROTOCOL = 'bird_hke_repro_v1'
+_C.REPRODUCIBILITY.PROTOCOL = 'bird_hke_repro_v2'
 _C.REPRODUCIBILITY.SEED = 2026
 _C.REPRODUCIBILITY.STRICT = True
 _C.REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS = True
@@ -56,6 +56,45 @@ _C.LOSS.FOCAL_ALPHA = 2.0
 _C.LOSS.FOCAL_BETA = 4.0
 _C.LOSS.FOCAL_WEIGHT = 1.0
 _C.LOSS.MSE_WEIGHT = 1.0
+
+# Optional probabilistic keypoint uncertainty modelling.  When disabled the
+# model, loss, decoder, and returned tensor are identical to the Phase-1
+# heatmap baseline.  When enabled, the final heatmap logits are normalized as
+# a spatial probability distribution and auxiliary heads estimate localization
+# quality and visibility for each keypoint.
+_C.UNCERTAINTY = CN()
+_C.UNCERTAINTY.ENABLED = False
+_C.UNCERTAINTY.DISTRIBUTION = 'softmax'  # 'softmax' or 'sparsemax'
+_C.UNCERTAINTY.TEMPERATURE = 1.0
+_C.UNCERTAINTY.HEAD_HIDDEN_CHANNELS = 128
+_C.UNCERTAINTY.JOINT_EMBED_DIM = 16
+_C.UNCERTAINTY.HEAD_DROPOUT = 0.0
+_C.UNCERTAINTY.RELIABILITY_GRADIENT_TO_BACKBONE = False
+
+# ProbPose-style expected bounded keypoint similarity (BKS) objective.
+_C.UNCERTAINTY.BKS_SIGMA_FRACTION = 0.05
+_C.UNCERTAINTY.LOCATION_WEIGHT = 1.0
+_C.UNCERTAINTY.SMOOTHNESS_WEIGHT = 0.001
+_C.UNCERTAINTY.QUALITY_WEIGHT = 0.1
+_C.UNCERTAINTY.VISIBILITY_WEIGHT = 0.1
+_C.UNCERTAINTY.BALANCE_VISIBILITY_CLASSES = True
+
+# Inference and post-hoc calibration.  CALIBRATION_FILE may be left empty
+# during training and populated after running tools/calibrate_uncertainty.py.
+_C.UNCERTAINTY.DECODER = 'expected_bks'  # 'expected_bks' or 'argmax'
+_C.UNCERTAINTY.SCORE_COMBINATION = 'quality_visibility'
+_C.UNCERTAINTY.CALIBRATION_SET = 'calibration'
+_C.UNCERTAINTY.CALIBRATION_FILE = ''
+_C.UNCERTAINTY.CONFORMAL_COVERAGE = 0.90
+
+# Synthetic occlusions retain the annotated coordinate while teaching the
+# visibility head that an image region can hide one or more landmarks.
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION = CN()
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION.ENABLED = True
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION.PROBABILITY = 0.25
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION.MIN_SIZE_FRACTION = 0.08
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION.MAX_SIZE_FRACTION = 0.20
+_C.UNCERTAINTY.SYNTHETIC_OCCLUSION.MAX_KEYPOINTS = 1
 
 # DATASET related params
 _C.DATASET = CN()

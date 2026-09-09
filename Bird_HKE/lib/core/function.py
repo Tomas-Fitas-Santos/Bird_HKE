@@ -8,7 +8,8 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.evaluate import accuracy
-from core.inference import get_final_preds, get_max_preds
+from core.inference import get_pose_output_preds, get_max_preds
+from models.common.uncertainty import spatial_probability
 from utilities.transforms import flip_back
 from utilities.vis import save_debug_images
 from utilities.reproducibility import accumulation_group_size
@@ -17,6 +18,57 @@ from utilities.reproducibility import accumulation_group_size
 logger = logging.getLogger(__name__)
 
 test_epoch = 0
+
+
+def _last_output(outputs):
+    return outputs[-1] if isinstance(outputs, list) else outputs
+
+
+def _location_maps(output):
+    return output['probability_maps'] if isinstance(output, dict) else output
+
+
+def _compute_loss(criterion, outputs, target, target_weight, meta):
+    if isinstance(outputs, list):
+        return sum(
+            criterion(item, target, target_weight, meta) for item in outputs
+        )
+    return criterion(outputs, target, target_weight, meta)
+
+
+def _flip_back_output(output, flip_pairs, device):
+    if not isinstance(output, dict):
+        flipped = flip_back(output.detach().cpu().numpy(), flip_pairs)
+        return torch.from_numpy(flipped.copy()).to(device)
+
+    result = {}
+    for key in ('location_logits', 'probability_maps'):
+        flipped = flip_back(output[key].detach().cpu().numpy(), flip_pairs)
+        result[key] = torch.from_numpy(flipped.copy()).to(device)
+    for key in ('quality_logits', 'visibility_logits'):
+        values = output[key].clone()
+        for left, right in flip_pairs:
+            values[:, [left, right]] = values[:, [right, left]]
+        result[key] = values
+    return result
+
+
+def _average_pose_outputs(config, first, second):
+    if not isinstance(first, dict):
+        return (first + second) * 0.5
+    logits = (first['location_logits'] + second['location_logits']) * 0.5
+    return {
+        'location_logits': logits,
+        'probability_maps': spatial_probability(
+            logits,
+            distribution=config.UNCERTAINTY.DISTRIBUTION,
+            temperature=config.UNCERTAINTY.TEMPERATURE,
+        ),
+        'quality_logits': (first['quality_logits'] + second['quality_logits']) * 0.5,
+        'visibility_logits': (
+            first['visibility_logits'] + second['visibility_logits']
+        ) * 0.5,
+    }
 
 def train(config, train_loader, model, criterion, optimizer, epoch,
           output_dir, tb_log_dir, writer_dict, grad_accum_steps=None):
@@ -48,14 +100,9 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
         target = target.cuda(non_blocking=True)
         target_weight = target_weight.cuda(non_blocking=True)
 
-        if isinstance(outputs, list):
-            output = outputs[-1]
-            loss = criterion(outputs[0], target, target_weight)
-            for output in outputs[1:]:
-                loss += criterion(output, target, target_weight)
-        else:
-            output = outputs
-            loss = criterion(output, target, target_weight)
+        output = _last_output(outputs)
+        loss = _compute_loss(criterion, outputs, target, target_weight, meta)
+        location_output = _location_maps(output)
 
         num_images = input.size(0)
         losses.update(loss.item(), num_images)
@@ -73,7 +120,7 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
             optimizer.step()
             optimizer.zero_grad()
 
-        output_np = output.detach().cpu().numpy()
+        output_np = location_output.detach().cpu().numpy()
         target_np = target.detach().cpu().numpy()
         _, avg_acc, cnt, pred = accuracy(output_np, target_np)
         
@@ -101,7 +148,11 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
             except Exception:
                 peak_dist = 0.0
                 peak_dist_norm = 0.0
-            msg = 'Epoch: [{0}][{1}/{2}]\t' \
+            components = getattr(criterion, 'last_components', {})
+            component_text = ''.join(
+                f'\tUQ-{name} {value:.5f}' for name, value in components.items()
+            )
+            msg = ('Epoch: [{0}][{1}/{2}]\t' \
                   'Time {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
                   'Speed {speed:.1f} samples/s\t' \
                   'Data {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
@@ -113,6 +164,7 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
                       speed=input.size(0)/batch_time.val,
                       data_time=data_time, loss=losses, acc=acc,
                       peak_dist=peak_dist, peak_dist_norm=peak_dist_norm)
+                  + component_text)
 
             logger.info(msg)
             # Do not write per-batch text logs per user preference.
@@ -129,7 +181,7 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
-            save_debug_images(config, input, meta, target, pred*4, output,
+            save_debug_images(config, input, meta, target, pred*4, location_output,
                               prefix)
     # Return the epoch average training accuracy
     return acc.avg
@@ -167,41 +219,38 @@ def validate(config, val_loader, val_dataset, model, criterion, output_dir,
             # compute output
             input = input.cuda(non_blocking=True)
             outputs = model(input)
-            if isinstance(outputs, list):
-                output = outputs[-1]
-            else:
-                output = outputs
+            output = _last_output(outputs)
 
             if config.TEST.FLIP_TEST:
                 input_flipped = input.flip(3)
                 outputs_flipped = model(input_flipped)
 
-                if isinstance(outputs_flipped, list):
-                    output_flipped = outputs_flipped[-1]
-                else:
-                    output_flipped = outputs_flipped
-
-                output_flipped = flip_back(output_flipped.cpu().numpy(),
-                                           val_dataset.flip_pairs)
-                output_flipped = torch.from_numpy(output_flipped.copy()).cuda()
+                output_flipped = _flip_back_output(
+                    _last_output(outputs_flipped), val_dataset.flip_pairs, input.device
+                )
 
 
                 # feature is not aligned, shift flipped heatmap for higher accuracy
                 if config.TEST.SHIFT_HEATMAP:
-                    output_flipped[:, :, :, 1:] = \
-                        output_flipped.clone()[:, :, :, 0:-1]
+                    if isinstance(output_flipped, dict):
+                        output_flipped['location_logits'][:, :, :, 1:] = \
+                            output_flipped['location_logits'].clone()[:, :, :, 0:-1]
+                    else:
+                        output_flipped[:, :, :, 1:] = \
+                            output_flipped.clone()[:, :, :, 0:-1]
 
-                output = (output + output_flipped) * 0.5
+                output = _average_pose_outputs(config, output, output_flipped)
 
             target = target.cuda(non_blocking=True)
             target_weight = target_weight.cuda(non_blocking=True)
 
-            loss = criterion(output, target, target_weight)
+            loss = criterion(output, target, target_weight, meta)
+            location_output = _location_maps(output)
 
             num_images = input.size(0)
             # measure accuracy and record loss
             losses.update(loss.item(), num_images)
-            output_np = output.cpu().numpy()
+            output_np = location_output.cpu().numpy()
             target_np = target.cpu().numpy()
             _, avg_acc, cnt, pred = accuracy(output_np, target_np)
 
@@ -217,8 +266,7 @@ def validate(config, val_loader, val_dataset, model, criterion, output_dir,
             #print("Scale:",s)
             score = meta['score'].numpy()
 
-            preds, maxvals = get_final_preds(
-                config, output.clone().cpu().numpy(), c, s)
+            preds, maxvals = get_pose_output_preds(config, output, c, s)
 
             bbox_offset = meta.get('bbox_offset', None)
             if bbox_offset is not None:
@@ -272,7 +320,7 @@ def validate(config, val_loader, val_dataset, model, criterion, output_dir,
                 )
                 if not os.path.exists(output_dir):
                     os.makedirs(output_dir)
-                save_debug_images(config, input, meta, target, pred*4, output,
+                save_debug_images(config, input, meta, target, pred*4, location_output,
                                   prefix)
 
         name_values, perf_indicator = val_dataset.evaluate(

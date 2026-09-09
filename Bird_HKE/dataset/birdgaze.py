@@ -27,6 +27,54 @@ from dataset.JointsDataset import JointsDataset
 logger = logging.getLogger(__name__)
 
 
+def infer_data_source(image_name):
+    """Infer the source for both flat and source-grouped dataset layouts."""
+    normalized = str(image_name).replace('\\', '/').strip('/')
+    parts = normalized.split('/')
+    lowered = [part.lower().replace(' ', '_') for part in parts]
+
+    if any(part in ('ebird', 'e_bird') for part in lowered):
+        return 'eBird'
+    if any(part in ('nabirds', 'na_birds') for part in lowered):
+        return 'NABirds'
+    if any(part in ('birdsnap', 'bird_snap') for part in lowered):
+        return 'BirdSnap'
+    if any(part in ('animal_kingdom', 'animalkingdom') for part in lowered):
+        return 'Animal Kingdom'
+
+    folder = parts[0] if len(parts) > 1 else ''
+    if folder.upper() == 'FINETUNE':
+        return 'eBird'
+    if folder.isdigit():
+        return 'NABirds'
+    if folder.isalpha() and folder.isupper():
+        return 'Animal Kingdom'
+    return 'BirdSnap'
+
+
+def coordinate_validity(joints, explicit_valid=None, visibility=None):
+    """Return which coordinates can supervise localization.
+
+    A visibility value of zero does not automatically discard a non-sentinel
+    coordinate.  This supports future fully annotated occlusions while still
+    treating the common ``[0, 0]`` placeholder as absent.
+    """
+    xy = np.asarray(joints, dtype=np.float32)[:, :2]
+    implicit = (
+        np.isfinite(xy).all(axis=1)
+        & (xy[:, 0] >= 0)
+        & (xy[:, 1] >= 0)
+        & np.any(xy != 0, axis=1)
+    )
+    if explicit_valid is not None:
+        values = np.asarray(explicit_valid, dtype=np.float32).reshape(-1)
+        return values > 0
+    if visibility is None:
+        return implicit
+    visible = np.asarray(visibility, dtype=np.float32).reshape(-1) > 0
+    return visible | implicit
+
+
 class BirdGazeDataset(JointsDataset):
     def __init__(self, cfg, root, image_set, is_train, transform=None):
         super().__init__(cfg, root, image_set, is_train, transform)
@@ -92,18 +140,47 @@ class BirdGazeDataset(JointsDataset):
 
             joints_3d = np.zeros((self.num_joints, 3), dtype=float)
             joints_3d_vis = np.zeros((self.num_joints,  3), dtype=float)
-            # Alteration here **** 
+            visibility_values = a.get('joints_vis')
+            visibility_known = np.zeros((self.num_joints, 1), dtype=np.float32)
+            visibility_target = np.zeros((self.num_joints, 1), dtype=np.float32)
+            joints_3d_valid = np.zeros((self.num_joints, 3), dtype=np.float32)
+
+            # Alteration here ****
             if self.image_set != '123abc':
-                joints = np.array(a['joints'])
+                joints = np.array(a['joints'], dtype=np.float32)
                 joints[:, 0:2] = joints[:, 0:2]
-                joints_vis = np.array(a['joints_vis'])
                 assert len(joints) == self.num_joints, \
                     'joint num diff: {} vs {}'.format(len(joints),
                                                       self.num_joints)
 
                 joints_3d[:, 0:2] = joints[:, 0:2]
-                joints_3d_vis[:, 0] = joints_vis[:]
-                joints_3d_vis[:, 1] = joints_vis[:]
+                valid = coordinate_validity(
+                    joints,
+                    explicit_valid=a.get('joints_valid'),
+                    visibility=visibility_values,
+                ).astype(np.float32)
+                joints_3d_valid[:, 0] = valid
+                joints_3d_valid[:, 1] = valid
+
+                if visibility_values is not None:
+                    visible = (
+                        np.asarray(visibility_values, dtype=np.float32).reshape(-1) > 0
+                    ).astype(np.float32)
+                    if visible.size != self.num_joints:
+                        raise ValueError(
+                            f"{image_name}: expected {self.num_joints} visibility "
+                            f"values, found {visible.size}"
+                        )
+                    visibility_known[:, 0] = 1.0
+                    visibility_target[:, 0] = visible
+                    joints_3d_vis[:, 0] = visible
+                    joints_3d_vis[:, 1] = visible
+                else:
+                    # eBird records have usable coordinates but no visibility
+                    # labels.  Keep legacy visualization/augmentation behavior
+                    # while masking these samples from the visibility loss.
+                    joints_3d_vis[:, 0] = valid
+                    joints_3d_vis[:, 1] = valid
 
             image_dir = 'images.zip@' if self.data_format == 'zip' else 'images'
             # sanitize image_name separators (some annotations use Windows backslashes)
@@ -159,6 +236,10 @@ class BirdGazeDataset(JointsDataset):
                     'bbox': bbox,
                     'joints_3d': joints_3d,
                     'joints_3d_vis': joints_3d_vis,
+                    'joints_3d_valid': joints_3d_valid,
+                    'visibility_known': visibility_known,
+                    'visibility_target': visibility_target,
+                    'source': infer_data_source(image_name),
                     'filename': '',
                     'imgnum': 0,
                 }
@@ -222,7 +303,15 @@ class BirdGazeDataset(JointsDataset):
             ]
         ]
 
-        jnt_visible = [x['joints_vis'] for x in gt_dict]
+        jnt_visible = []
+        for record in gt_dict:
+            visibility = record.get('joints_vis')
+            if visibility is None:
+                visibility = coordinate_validity(
+                    record['joints'],
+                    explicit_valid=record.get('joints_valid'),
+                ).astype(np.float32).tolist()
+            jnt_visible.append(visibility)
         pos_gt_src = [x['joints'] for x in gt_dict]
         scale = [x['scale'] for x in gt_dict]
 

@@ -5,6 +5,7 @@ Main entry point for video processing with object detection and pose estimation.
 
 import re
 import argparse
+import hashlib
 import json
 import cv2
 import numpy as np
@@ -21,6 +22,7 @@ from tools.pose_estimator import PoseEstimator
 from tools.motion_analyzer import MotionAnalyzer
 from tools.visualizer import Visualizer
 from tools.metrics import evaluate_poses, evaluate_jitter_only
+from tools.metrics import evaluate_uncertainty_predictions
 
 
 # ── Legacy checkpoint compatibility ──────────────────────────────────
@@ -79,6 +81,7 @@ class BirdPoseEstimationPipeline:
                 print(f'  WARNING – missing keys:    {info.missing_keys}')
             if info.unexpected_keys:
                 print(f'  WARNING – unexpected keys:  {info.unexpected_keys}')
+            self._verify_uncertainty_calibration(cfg.TEST.POSE_MODEL_FILE)
         else:
             print('Warning: No pose model file specified in config')
         
@@ -107,6 +110,31 @@ class BirdPoseEstimationPipeline:
         model.eval()
         
         return model
+
+    @staticmethod
+    def _verify_uncertainty_calibration(checkpoint_path):
+        if not bool(cfg.UNCERTAINTY.ENABLED) or not cfg.UNCERTAINTY.CALIBRATION_FILE:
+            return
+        calibration_path = Path(cfg.UNCERTAINTY.CALIBRATION_FILE).expanduser()
+        if not calibration_path.is_file():
+            raise FileNotFoundError(
+                f'Uncertainty calibration file not found: {calibration_path}'
+            )
+        with calibration_path.open('r', encoding='utf-8') as handle:
+            calibration = json.load(handle)
+        expected = calibration.get('checkpoint_sha256')
+        if not expected:
+            raise RuntimeError(
+                'Calibration JSON has no checkpoint_sha256 and cannot be matched safely.'
+            )
+        digest = hashlib.sha256()
+        with open(checkpoint_path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            raise RuntimeError(
+                'The calibration JSON was fitted to a different model checkpoint.'
+            )
     
     def _load_ground_truth(self):
         """Load ground truth annotations if provided."""
@@ -154,6 +182,7 @@ class BirdPoseEstimationPipeline:
                 bboxes,
                 write_initial=self.args.write_pose
             )
+            self._save_uncertainty(results)
             
             # Step 3: Analysis and Visualization
             self._analyze_and_visualize(results, frames, fps, total_time)
@@ -169,6 +198,20 @@ class BirdPoseEstimationPipeline:
                 self._evaluate_jitter(results, fps)
         
         print(f"\nPipeline complete! Results saved to: {self.results_dir}")
+
+    def _save_uncertainty(self, results):
+        """Persist per-frame probabilistic diagnostics when UQ is enabled."""
+        values = results.get('uncertainties_initial', [])
+        if not any(value is not None for value in values):
+            return
+        records = [
+            {'frame_index': index, 'keypoints': value}
+            for index, value in enumerate(values)
+        ]
+        output_path = self.results_dir / 'uncertainty_initial.json'
+        with output_path.open('w', encoding='utf-8') as handle:
+            json.dump(records, handle, indent=2, allow_nan=False)
+        print(f'Uncertainty diagnostics saved to: {output_path}')
     
     def _analyze_and_visualize(self, results, frames, fps, total_time):
         """Analyze motion and create visualizations."""
@@ -200,6 +243,18 @@ class BirdPoseEstimationPipeline:
             pred_bboxes=bboxes
         )
 
+        uncertainty_values = results.get('uncertainties_initial', [])
+        uncertainty_metrics = None
+        if any(value is not None for value in uncertainty_values):
+            uncertainty_metrics = evaluate_uncertainty_predictions(
+                results['poses_initial'],
+                uncertainty_values,
+                self.gt_annotations,
+                self.results_dir,
+                pred_bboxes=bboxes,
+                similarity_sigma_fraction=cfg.UNCERTAINTY.BKS_SIGMA_FRACTION,
+            )
+
         print("\n=== Evaluation Metrics (Initial) ===")
         for key, value in metrics.get('initial', {}).items():
             print(f"{key}: {value:.4f}")
@@ -207,6 +262,11 @@ class BirdPoseEstimationPipeline:
         if has_final:
             print("\n=== Evaluation Metrics (Final) ===")
             for key, value in metrics.get('final', {}).items():
+                print(f"{key}: {value:.4f}")
+
+        if uncertainty_metrics is not None:
+            print("\n=== Uncertainty Calibration Metrics (Initial) ===")
+            for key, value in uncertainty_metrics.items():
                 print(f"{key}: {value:.4f}")
 
     def _evaluate_jitter(self, results, fps):

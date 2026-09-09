@@ -124,6 +124,17 @@ def training_protocol(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
             os.path.expanduser(cfg.MODEL.PRETRAINED)
         ),
         'loss': _plain(cfg.LOSS),
+        'uncertainty_training': {
+            key: _plain(getattr(cfg.UNCERTAINTY, key))
+            for key in (
+                'ENABLED', 'DISTRIBUTION', 'TEMPERATURE',
+                'HEAD_HIDDEN_CHANNELS', 'JOINT_EMBED_DIM', 'HEAD_DROPOUT',
+                'RELIABILITY_GRADIENT_TO_BACKBONE',
+                'BKS_SIGMA_FRACTION', 'LOCATION_WEIGHT', 'SMOOTHNESS_WEIGHT',
+                'QUALITY_WEIGHT', 'VISIBILITY_WEIGHT', 'SYNTHETIC_OCCLUSION',
+                'BALANCE_VISIBILITY_CLASSES',
+            )
+        },
         # ROOT and model-file paths are deliberately excluded: changing a
         # mount point must not invalidate an otherwise identical resumed run.
         'dataset': {

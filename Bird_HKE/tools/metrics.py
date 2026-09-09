@@ -77,6 +77,199 @@ def evaluate_jitter_only(poses_initial, poses_final, results_dir, fps=None, has_
     return metrics
 
 
+def _rankdata(values):
+    values = np.asarray(values, dtype=float)
+    order = np.argsort(values, kind='mergesort')
+    ranks = np.empty(values.size, dtype=float)
+    ranks[order] = np.arange(values.size, dtype=float)
+    unique, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+    del unique
+    for group, count in enumerate(counts):
+        if count > 1:
+            members = inverse == group
+            ranks[members] = ranks[members].mean()
+    return ranks
+
+
+def _spearman(first, second):
+    first = np.asarray(first, dtype=float)
+    second = np.asarray(second, dtype=float)
+    valid = np.isfinite(first) & np.isfinite(second)
+    if valid.sum() < 2:
+        return 0.0
+    first_rank = _rankdata(first[valid])
+    second_rank = _rankdata(second[valid])
+    if np.std(first_rank) == 0 or np.std(second_rank) == 0:
+        return 0.0
+    return float(np.corrcoef(first_rank, second_rank)[0, 1])
+
+
+def _calibration_metrics(confidence, target, bins=10):
+    confidence = np.asarray(confidence, dtype=float)
+    target = np.asarray(target, dtype=float)
+    valid = np.isfinite(confidence) & np.isfinite(target)
+    confidence = confidence[valid]
+    target = target[valid]
+    if confidence.size == 0:
+        return 0.0, 0.0
+    boundaries = np.linspace(0, 1, bins + 1)
+    ece = 0.0
+    for index, (lower, upper) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        member = (confidence >= lower) & (
+            confidence <= upper if index == bins - 1 else confidence < upper
+        )
+        if member.any():
+            ece += member.mean() * abs(confidence[member].mean() - target[member].mean())
+    return float(ece), float(np.mean((confidence - target) ** 2))
+
+
+def evaluate_uncertainty_predictions(
+    poses,
+    uncertainties,
+    gt_annotations,
+    results_dir,
+    pred_bboxes=None,
+    similarity_sigma_fraction=0.05,
+):
+    """Evaluate UQ against annotated video frames without refitting calibration."""
+    quality_values = []
+    similarity_values = []
+    visibility_probability = []
+    visibility_target = []
+    normalized_errors = []
+    entropy_values = []
+    major_std_values = []
+    correct_values = []
+    conformal_covered = []
+    conformal_area_fraction = []
+
+    for frame_index in range(min(len(poses), len(uncertainties), len(gt_annotations))):
+        uncertainty = uncertainties[frame_index]
+        if uncertainty is None:
+            continue
+        prediction = np.asarray(poses[frame_index], dtype=float)
+        record = gt_annotations[frame_index]
+        ground_truth = np.asarray(record.get('joints'), dtype=float)
+        if prediction.shape != ground_truth.shape:
+            continue
+
+        explicit_valid = record.get('joints_valid')
+        if explicit_valid is not None:
+            coordinate_valid = np.asarray(explicit_valid).reshape(-1) > 0
+        else:
+            coordinate_valid = (
+                np.isfinite(ground_truth).all(axis=1)
+                & (ground_truth[:, 0] >= 0)
+                & (ground_truth[:, 1] >= 0)
+                & np.any(ground_truth != 0, axis=1)
+            )
+            if record.get('joints_vis') is not None:
+                coordinate_valid |= _normalize_visibility(record['joints_vis']) > 0
+        coordinate_valid &= np.isfinite(prediction).all(axis=1)
+
+        bbox_size = _bbox_reference_size(record.get('bbox'))
+        if bbox_size is None:
+            bbox_size = _bbox_reference_size(
+                _pred_bbox_for_frame(pred_bboxes, frame_index)
+            )
+        if bbox_size is None:
+            bbox_size = float(record.get('scale', 1.0)) * 200.0 * math.sqrt(2)
+        if bbox_size <= 0:
+            continue
+
+        error = np.linalg.norm(prediction - ground_truth, axis=1)
+        normalized_error = error / bbox_size
+        sigma = max(float(similarity_sigma_fraction) * bbox_size, 1e-6)
+        similarity = np.exp(-(error ** 2) / (2 * sigma ** 2))
+
+        quality = np.asarray(uncertainty['quality'], dtype=float).reshape(-1)
+        entropy = np.asarray(uncertainty['normalized_entropy'], dtype=float).reshape(-1)
+        major_std = np.asarray(uncertainty['major_minor_std'], dtype=float)[:, 0]
+        quality_values.extend(quality[coordinate_valid])
+        similarity_values.extend(similarity[coordinate_valid])
+        normalized_errors.extend(normalized_error[coordinate_valid])
+        entropy_values.extend(entropy[coordinate_valid])
+        major_std_values.extend((major_std / bbox_size)[coordinate_valid])
+        correct_values.extend((normalized_error[coordinate_valid] <= 0.05).astype(float))
+
+        regions = uncertainty.get('conformal_region_rle_heatmap')
+        affine = uncertainty.get('image_to_heatmap_affine')
+        heatmap_size = uncertainty.get('heatmap_size')
+        conformal_area = uncertainty.get('conformal_area_pixels')
+        if regions is not None and affine is not None and heatmap_size is not None:
+            affine = np.asarray(affine, dtype=float)
+            heatmap_width, heatmap_height = np.asarray(heatmap_size, dtype=int)
+            for joint in np.flatnonzero(coordinate_valid):
+                heatmap_point = affine @ np.append(ground_truth[joint], 1.0)
+                x = int(np.clip(round(heatmap_point[0]), 0, heatmap_width - 1))
+                y = int(np.clip(round(heatmap_point[1]), 0, heatmap_height - 1))
+                flat_index = y * heatmap_width + x
+                covered = any(
+                    int(start) <= flat_index < int(start) + int(length)
+                    for start, length in regions[joint]
+                )
+                conformal_covered.append(float(covered))
+                if conformal_area is not None:
+                    area = np.asarray(conformal_area, dtype=float).reshape(-1)[joint]
+                    conformal_area_fraction.append(area / (bbox_size ** 2))
+
+        if record.get('joints_vis') is not None:
+            known_visibility = _normalize_visibility(record['joints_vis']).reshape(-1)
+            predicted_visibility = np.asarray(
+                uncertainty['visibility_probability'], dtype=float
+            ).reshape(-1)
+            count = min(known_visibility.size, predicted_visibility.size)
+            visibility_probability.extend(predicted_visibility[:count])
+            visibility_target.extend((known_visibility[:count] > 0).astype(float))
+
+    quality_ece, quality_brier = _calibration_metrics(
+        quality_values, similarity_values
+    )
+    visibility_ece, visibility_brier = _calibration_metrics(
+        visibility_probability, visibility_target
+    )
+    quality_array = np.asarray(quality_values, dtype=float)
+    correct_array = np.asarray(correct_values, dtype=float)
+    if quality_array.size:
+        order = np.argsort(-quality_array)
+        cumulative_risk = np.cumsum(1.0 - correct_array[order]) / np.arange(
+            1, quality_array.size + 1
+        )
+        coverage = np.arange(1, quality_array.size + 1) / quality_array.size
+        selective_aurc = float(np.trapz(cumulative_risk, coverage))
+    else:
+        selective_aurc = 0.0
+
+    metrics = {
+        'quality_ECE': quality_ece,
+        'quality_Brier': quality_brier,
+        'visibility_ECE': visibility_ece,
+        'visibility_Brier': visibility_brier,
+        'quality_similarity_Spearman': _spearman(quality_values, similarity_values),
+        'entropy_error_Spearman': _spearman(entropy_values, normalized_errors),
+        'std_error_Spearman': _spearman(major_std_values, normalized_errors),
+        'selective_PCK_risk_coverage_AUC': selective_aurc,
+        'conformal_empirical_coverage': (
+            float(np.mean(conformal_covered)) if conformal_covered else 0.0
+        ),
+        'conformal_mean_area_fraction': (
+            float(np.mean(conformal_area_fraction))
+            if conformal_area_fraction else 0.0
+        ),
+        'annotated_keypoints': float(len(quality_values)),
+        'visibility_labels': float(len(visibility_target)),
+        'conformal_keypoints': float(len(conformal_covered)),
+    }
+    uncertainty_path = Path(results_dir) / 'initial' / 'uncertainty_metrics.txt'
+    uncertainty_path.parent.mkdir(parents=True, exist_ok=True)
+    with uncertainty_path.open('w', encoding='utf-8') as handle:
+        handle.write('=== Uncertainty Calibration Metrics (Initial) ===\n\n')
+        for key, value in metrics.items():
+            handle.write(f'{key}: {value:.6f}\n')
+    print(f'Saved uncertainty metrics to: {uncertainty_path}')
+    return metrics
+
+
 def compute_pck(pred, gt_joints, visibility, ref_size, threshold=0.05, apply_visibility=True):
     """
     Compute PCK (Percentage of Correct Keypoints) for a single frame.

@@ -39,7 +39,10 @@ def fliplr_joints(joints, joints_vis, width, matched_parts):
         joints_vis[pair[0], :], joints_vis[pair[1], :] = \
             joints_vis[pair[1], :], joints_vis[pair[0], :].copy()
 
-    return joints*joints_vis, joints_vis
+    # Do not erase coordinates merely because a landmark is invisible.  The
+    # caller decides independently whether a coordinate is annotated and can
+    # therefore retain fully annotated occluded landmarks.
+    return joints, joints_vis
 
 
 def transform_preds(coords, center, scale, output_size):

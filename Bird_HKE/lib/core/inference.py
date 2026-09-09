@@ -1,9 +1,15 @@
 import math
+import json
 import numpy as np
 import os
 import sys
+import cv2
+from functools import lru_cache
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from core.uncertainty import hpd_region
+from core.uncertainty import probability_map_moments
+from utilities.transforms import get_affine_transform
 from utilities.transforms import transform_preds
 
 
@@ -199,3 +205,228 @@ def get_final_preds(config, batch_heatmaps, center, scale):
         )
 
     return preds, maxvals
+
+
+def _to_numpy(value):
+    if hasattr(value, 'detach'):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _numpy_sparsemax(values):
+    shifted = values - np.max(values, axis=-1, keepdims=True)
+    ordered = np.sort(shifted, axis=-1)[..., ::-1]
+    ranks = np.arange(1, values.shape[-1] + 1, dtype=values.dtype)
+    cumulative = np.cumsum(ordered, axis=-1)
+    support = 1 + ranks * ordered > cumulative
+    support_size = np.maximum(support.sum(axis=-1, keepdims=True), 1)
+    tau_sum = np.take_along_axis(cumulative, support_size - 1, axis=-1)
+    tau = (tau_sum - 1) / support_size
+    return np.maximum(shifted - tau, 0)
+
+
+def spatial_probability_numpy(logits, distribution='softmax', temperature=1.0):
+    logits = np.asarray(logits)
+    shape = logits.shape
+    flat = logits.reshape(shape[0], shape[1], -1) / max(float(temperature), 1e-6)
+    if str(distribution).lower() == 'softmax':
+        shifted = flat - np.max(flat, axis=-1, keepdims=True)
+        probability = np.exp(shifted)
+        probability /= np.maximum(probability.sum(axis=-1, keepdims=True), 1e-12)
+    elif str(distribution).lower() == 'sparsemax':
+        probability = _numpy_sparsemax(flat)
+    else:
+        raise ValueError(f'Unknown spatial distribution: {distribution!r}')
+    return probability.reshape(shape)
+
+
+@lru_cache(maxsize=8)
+def _read_calibration(path, modified_time):
+    del modified_time
+    with open(path, 'r', encoding='utf-8') as handle:
+        return json.load(handle)
+
+
+def _load_calibration(config):
+    try:
+        path = str(config.UNCERTAINTY.CALIBRATION_FILE)
+    except Exception:
+        path = ''
+    if not path:
+        return {}
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Uncertainty calibration file not found: {path}')
+    return _read_calibration(path, os.path.getmtime(path))
+
+
+def _calibrated_probability_maps(config, output, calibration):
+    logits = _to_numpy(output['location_logits'])
+    probability_maps = _to_numpy(output['probability_maps'])
+    if 'location_temperature' in calibration:
+        probability_maps = spatial_probability_numpy(
+            logits,
+            distribution=config.UNCERTAINTY.DISTRIBUTION,
+            temperature=float(calibration['location_temperature']),
+        )
+    return probability_maps
+
+
+def _calibrated_reliability(output, calibration):
+    quality_temperature = max(
+        float(calibration.get('quality_temperature', 1.0)), 1e-6
+    )
+    visibility_temperature = max(
+        float(calibration.get('visibility_temperature', 1.0)), 1e-6
+    )
+    quality = 1.0 / (
+        1.0 + np.exp(-_to_numpy(output['quality_logits']) / quality_temperature)
+    )
+    visibility = 1.0 / (
+        1.0 + np.exp(-_to_numpy(output['visibility_logits']) / visibility_temperature)
+    )
+    return quality, visibility
+
+
+def get_probabilistic_preds(config, output, center, scale):
+    """Decode probabilistic maps and calibrated per-keypoint confidence."""
+    calibration = _load_calibration(config)
+    probability_maps = _calibrated_probability_maps(config, output, calibration)
+
+    decoder = str(config.UNCERTAINTY.DECODER).lower()
+    decoder_maps = probability_maps
+    if decoder == 'expected_bks':
+        sigma = max(
+            float(config.UNCERTAINTY.BKS_SIGMA_FRACTION)
+            * min(probability_maps.shape[2:]),
+            1e-6,
+        )
+        decoder_maps = np.empty_like(probability_maps)
+        for sample in range(probability_maps.shape[0]):
+            for joint in range(probability_maps.shape[1]):
+                decoder_maps[sample, joint] = cv2.GaussianBlur(
+                    probability_maps[sample, joint],
+                    ksize=(0, 0),
+                    sigmaX=sigma,
+                    sigmaY=sigma,
+                    borderType=cv2.BORDER_CONSTANT,
+                )
+    elif decoder != 'argmax':
+        raise ValueError(
+            f"Unknown uncertainty decoder {decoder!r}; expected 'expected_bks' or 'argmax'."
+        )
+
+    coordinates, _ = get_max_preds(decoder_maps)
+    height, width = probability_maps.shape[2:]
+    predictions = coordinates.copy()
+    for index in range(coordinates.shape[0]):
+        predictions[index] = transform_preds(
+            coordinates[index], center[index], scale[index], [width, height]
+        )
+
+    quality, visibility = _calibrated_reliability(output, calibration)
+    combination = str(config.UNCERTAINTY.SCORE_COMBINATION).lower()
+    if combination == 'quality_visibility':
+        scores = quality * visibility
+    elif combination == 'quality':
+        scores = quality
+    elif combination == 'visibility':
+        scores = visibility
+    else:
+        raise ValueError(
+            'UNCERTAINTY.SCORE_COMBINATION must be quality_visibility, quality, or visibility'
+        )
+    scores = np.clip(scores[..., None], 0.0, 1.0).astype(np.float32)
+    _update_score_stats(scores)
+    return predictions, scores
+
+
+def get_pose_output_uncertainty(config, output, center, scale):
+    """Return interpretable per-keypoint uncertainty for annotated or raw video."""
+    if not isinstance(output, dict):
+        return None
+    calibration = _load_calibration(config)
+    probability_maps = _calibrated_probability_maps(config, output, calibration)
+    quality, visibility = _calibrated_reliability(output, calibration)
+    statistics = probability_map_moments(probability_maps)
+    _, _, height, width = probability_maps.shape
+
+    covariance_image = np.empty_like(statistics['covariance'])
+    mean_image = np.empty_like(statistics['mean'])
+    pixel_area_scale = np.empty(probability_maps.shape[:2], dtype=np.float64)
+    image_to_heatmap = np.empty((probability_maps.shape[0], 2, 3), dtype=np.float64)
+    for sample in range(probability_maps.shape[0]):
+        image_to_heatmap[sample] = get_affine_transform(
+            center[sample], scale[sample], 0, [width, height]
+        )
+        inverse = get_affine_transform(
+            center[sample], scale[sample], 0, [width, height], inv=1
+        )
+        linear = inverse[:, :2]
+        determinant = abs(float(np.linalg.det(linear)))
+        for joint in range(probability_maps.shape[1]):
+            covariance_image[sample, joint] = (
+                linear @ statistics['covariance'][sample, joint] @ linear.T
+            )
+            point = np.append(statistics['mean'][sample, joint], 1.0)
+            mean_image[sample, joint] = inverse @ point
+            pixel_area_scale[sample, joint] = determinant
+
+    eigenvalues = np.linalg.eigvalsh(covariance_image)
+    standard_deviation = np.sqrt(np.maximum(eigenvalues, 0.0))[..., ::-1]
+    normalized_entropy = statistics['entropy'] / max(math.log(height * width), 1e-12)
+
+    conformal_mass = calibration.get('hpd_mass_per_joint')
+    conformal_area = None
+    conformal_regions = None
+    if conformal_mass is not None:
+        masses = np.asarray(conformal_mass, dtype=np.float64)
+        conformal_area = np.zeros(probability_maps.shape[:2], dtype=np.float64)
+        conformal_regions = []
+        for sample in range(probability_maps.shape[0]):
+            sample_regions = []
+            for joint in range(probability_maps.shape[1]):
+                if np.isfinite(masses[joint]):
+                    region = hpd_region(
+                        probability_maps[sample, joint], masses[joint]
+                    )
+                    cells = region.sum()
+                    conformal_area[sample, joint] = (
+                        float(cells) * pixel_area_scale[sample, joint]
+                    )
+                    flat = region.reshape(-1).astype(np.int8)
+                    padded = np.pad(flat, (1, 1), constant_values=0)
+                    changes = np.diff(padded)
+                    starts = np.flatnonzero(changes == 1)
+                    ends = np.flatnonzero(changes == -1)
+                    sample_regions.append(
+                        [[int(start), int(end - start)] for start, end in zip(starts, ends)]
+                    )
+                else:
+                    sample_regions.append([])
+            conformal_regions.append(sample_regions)
+
+    return {
+        'distribution_mean': mean_image,
+        'covariance': covariance_image,
+        'major_minor_std': standard_deviation,
+        'normalized_entropy': normalized_entropy,
+        'hpd90_area_heatmap_cells': statistics['hpd90_area'],
+        'conformal_area_pixels': conformal_area,
+        'conformal_region_rle_heatmap': conformal_regions,
+        'image_to_heatmap_affine': image_to_heatmap,
+        'heatmap_size': np.tile(
+            np.asarray([width, height], dtype=np.int64),
+            (probability_maps.shape[0], 1),
+        ),
+        'quality': quality,
+        'visibility_probability': visibility,
+    }
+
+
+def get_pose_output_preds(config, output, center, scale):
+    """Decode either a Phase-1 heatmap tensor or a Phase-2 output bundle."""
+    if isinstance(output, dict):
+        return get_probabilistic_preds(config, output, center, scale)
+    heatmaps = _to_numpy(output)
+    return get_final_preds(config, heatmaps, center, scale)

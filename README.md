@@ -107,43 +107,25 @@ python Bird_HKE/tools/train.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_s
 
 ### Controlled and reproducible training protocol
 
-All experiment YAMLs use the same `bird_hke_repro_v1` protocol. Before
-training, first generate the folder-stratified image splits. The source dataset
-must contain `annot/train.json`, `annot/test.json`, `annot/val.json`, and an
-`images/` directory. Paths in each annotation record are interpreted relative
-to `images/` and must not start with `images/`.
+All experiment YAMLs use the same `bird_hke_repro_v2` protocol and read only
+from the dataset's existing `annot/` folder. Dataset construction is a separate,
+one-time process and is intentionally not part of this repository's recurring
+training tools. Each dataset used here must already contain:
 
-Preview the split without writing files:
-
-```bash
-python Bird_HKE/tools/create_reproducible_splits.py \
-  --dataset-root BirdGaze_v2/birdgaze_corrected_subset
+```text
+dataset_root/
+  annot/
+    train.json
+    val.json
+    calibration.json
+  images/
 ```
 
-After reviewing the counts, write `train.json`, `val.json`,
-`calibration.json`, and `split_manifest.json` to the new
-`annot_repro_v1/` directory:
-
-```bash
-python Bird_HKE/tools/create_reproducible_splits.py \
-  --dataset-root BirdGaze_v2/birdgaze_corrected_subset \
-  --write
-```
-
-Run the same command for the original subset and full dataset. Corrected and
-original subsets that contain the same relative image paths receive identical
-memberships because splitting is deterministic and independent of the original
-JSON order. The original `annot/` files are never overwritten.
-
-The splitter pools the three old partitions and stratifies by the complete
-parent directory of each image. Folders containing 1-4 images remain entirely
-in training; folders with 5-9 images contribute one image to whichever held-out
-partition has the larger global deficit; folders with at least 10 images follow
-the 80/10/10 ratio with at least one validation and one calibration image.
-
-The experiment YAMLs read training and validation annotations from
-`annot_repro_v1/`. The calibration partition is reserved for uncertainty
-calibration and is not consumed by the base training loop.
+Image paths in the JSON records are relative to `images/` and must not begin
+with `images/`. `train.json` updates weights, `val.json` selects checkpoints,
+and `calibration.json` is used only after uncertainty training. The external
+videos remain the final test set; the image validation and calibration splits
+are not reported as a final test set.
 
 Before starting a training campaign, verify the protocol from the repository root:
 
@@ -152,12 +134,12 @@ python Bird_HKE/tools/audit_training_protocol.py
 python -m unittest discover -s tests
 ```
 
-The shared protocol fixes the following values across architectures:
+The shared baseline protocol fixes the following values across architectures:
 
 - input/heatmap size: 256 x 256 / 64 x 64; Gaussian sigma: 2
 - random initialization from scratch (no pretrained checkpoint)
 - RGB input, horizontal flip, 0.25 scale jitter, and 30-degree rotation
-- foreground-weighted, visibility-masked heatmap MSE
+- foreground-weighted, coordinate-availability-masked heatmap MSE
 - AdamW, learning rate `5e-4`, weight decay `0.01`
 - 100 epochs, 5 warm-up epochs, cosine decay to `1e-5`
 - gradient clipping at 1.0
@@ -177,21 +159,65 @@ states and the protocol hash, so an interrupted run resumes from the next epoch
 with the same sampling and augmentation stream. Strict mode rejects legacy or
 incompatible checkpoints instead of silently mixing protocols.
 
-The supplied configs write to new `repro_v1/seed_2026` directories, preserving
+The supplied configs write to new `repro_v2/baseline/seed_2026` directories, preserving
 the previously trained models. `TRAIN.RESUME_FROM_CKPT: true` is safe within
 that directory: it resumes only a matching reproducible run. For an independent
 repeat, use another seed and separate output directories. All architectures in
 one comparison must use the same seed set; seeds 2026, 2027, and 2028 are a
 reasonable three-run campaign for reporting mean and standard deviation.
 
-The generated image `val` split is used only for model selection during
-training. It is not claimed as the final test set. The held-out external videos
-remain the final evaluation set.
-
 Deterministic settings and recorded environments make runs scientifically
 reproducible, but bit-for-bit equality between different GPU architectures is
 not guaranteed by CUDA. Comparisons should therefore use the same protocol and
 seed set and report variation across seeds.
+
+### Optional uncertainty-aware training
+
+The same architecture config can be trained in either mode. The checked-in
+YAMLs explicitly set `UNCERTAINTY.ENABLED: false`, which preserves the original
+heatmap tensor and MSE training path. To train its matched uncertainty variant,
+enable the module and use a separate run directory:
+
+```bash
+python Bird_HKE/tools/train.py \
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml \
+  UNCERTAINTY.ENABLED true \
+  TRAIN.CKPT_DIR Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026 \
+  TRAIN.LOG_DIR Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026
+```
+
+When enabled, each keypoint output is a normalized spatial probability map.
+Training minimizes expected bounded keypoint-similarity risk and jointly learns
+two per-keypoint auxiliary outputs: localization quality and visibility.
+Localization is supervised wherever a coordinate exists, including future
+fully annotated occlusions. Visibility is supervised only where the JSON has a
+visibility label; eBird samples without that field are masked from this loss.
+Landmark-centred synthetic occlusions provide additional hidden-point examples
+without inventing coordinates.
+
+After selecting the best checkpoint with `val.json`, fit post-hoc temperatures
+and per-keypoint split-conformal highest-density regions using only
+`annot/calibration.json`:
+
+```bash
+python Bird_HKE/tools/calibrate_uncertainty.py \
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml \
+  --checkpoint Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/model_best.pth \
+  --output Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/uncertainty_calibration.json \
+  UNCERTAINTY.ENABLED true
+```
+
+For video inference with that model, set `UNCERTAINTY.ENABLED`,
+`TEST.POSE_MODEL_FILE`, and `UNCERTAINTY.CALIBRATION_FILE` to the matching
+checkpoint and calibration JSON. Never combine a calibration file with a
+different architecture, seed, or checkpoint; the video loader verifies the
+stored checkpoint SHA-256. Uncertainty-enabled video runs write
+`uncertainty_initial.json` with per-frame, per-keypoint quality, visibility
+probability, covariance, major/minor standard deviation, entropy, and region
+area. This file is produced even when the video has no ground truth.
+
+See `Bird_HKE/UNCERTAINTY.md` for the design rationale, literature mapping,
+annotation rules, limitations, and the calibration evidence to report.
 
 For finetuning (if your workflow uses it):
 

@@ -94,6 +94,18 @@ class RuntimeReproducibilityTests(unittest.TestCase):
             protocol_hash(training_protocol(second, plan)),
         )
 
+    def test_protocol_hash_changes_when_uncertainty_training_changes(self):
+        baseline = _C.clone()
+        uncertainty = _C.clone()
+        uncertainty.defrost()
+        uncertainty.UNCERTAINTY.ENABLED = True
+        uncertainty.freeze()
+        plan = resolve_batch_plan(baseline.TRAIN, 1)
+        self.assertNotEqual(
+            protocol_hash(training_protocol(baseline, plan)),
+            protocol_hash(training_protocol(uncertainty, plan)),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
