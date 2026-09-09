@@ -16,6 +16,7 @@ Bird_HKE/experiments/hypothesis_*.csv
 Bird_HKE/*.zip
 
 # Training datasets
+BirdGaze_v2/
 BirdGaze_Full_Dataset/
 birdgaze_original_subset/
 birdgaze_corrected_subset/
