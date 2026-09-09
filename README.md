@@ -239,12 +239,6 @@ area. This file is produced even when the video has no ground truth.
 See `Bird_HKE/UNCERTAINTY.md` for the design rationale, literature mapping,
 annotation rules, limitations, and the calibration evidence to report.
 
-For finetuning (if your workflow uses it):
-
-```bash
-python Bird_HKE/tools/finetune.py --cfg Bird_HKE/experiments/HR_Mamba/hr_mamba_CS_sum.yaml
-```
-
 Notes:
 
 - Set dataset location in the selected YAML (`DATASET.ROOT`).

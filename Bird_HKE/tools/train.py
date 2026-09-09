@@ -86,11 +86,6 @@ def parse_args():
                         help='log directory',
                         type=str,
                         default='')
-    parser.add_argument('--prevModelDir',
-                        help='prev Model directory',
-                        type=str,
-                        default='')
-
     args = parser.parse_args()
 
     return args

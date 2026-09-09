@@ -43,6 +43,8 @@ def infer_data_source(image_name):
         return 'Animal Kingdom'
 
     folder = parts[0] if len(parts) > 1 else ''
+    # ``FINETUNE`` is the legacy folder name of the eBird data source; it is
+    # unrelated to a model-training phase.
     if folder.upper() == 'FINETUNE':
         return 'eBird'
     if folder.isdigit():

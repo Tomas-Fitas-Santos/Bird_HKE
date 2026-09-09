@@ -35,7 +35,6 @@ def parse_args():
     # Keep the namespace compatible with update_config and train.py.
     parser.add_argument('--modelDir', default='')
     parser.add_argument('--logDir', default='')
-    parser.add_argument('--prevModelDir', default='')
     parser.add_argument(
         'opts',
         default=None,

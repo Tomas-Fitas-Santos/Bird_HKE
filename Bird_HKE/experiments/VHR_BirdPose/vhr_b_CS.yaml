@@ -123,26 +123,6 @@ TRAIN:
   CLIP_GRAD_NORM: 1.0
   GRAD_ACCUM_STEPS: 0   # automatically derived from effective batch and GPU count
   WD: 0.01
-FINETUNE:
-  RESUME_FROM_CKPT: true
-  DATA_DIR: occlusion_FINETUNE_ebird
-  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/VHR_BirdPose/repro_v2/baseline/seed_2026' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/VHR_BirdPose/repro_v2/baseline/seed_2026' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Corrected_Subset/VHR_BirdPose/repro_v2/baseline/seed_2026' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
-  BATCH_SIZE_PER_GPU: 8
-  EFFECTIVE_BATCH_SIZE: 64
-  SHUFFLE: true
-  DROP_LAST: false
-  BEGIN_EPOCH: 0
-  END_EPOCH: 100
-  OPTIMIZER: adamw
-  LR: 0.0005
-  LR_SCHEDULE: cosine
-  WARMUP_EPOCHS: 5
-  MIN_LR: 1.0e-5
-  CLIP_GRAD_NORM: 1.0
-  GRAD_ACCUM_STEPS: 0   # automatically derived from effective batch and GPU count
-  WD: 0.01
 TEST:
   BATCH_SIZE_PER_GPU: 1
   DETECT_MODEL_FILE: 'Bird_HKE/trained_models/YOLOv8Bird.pt'

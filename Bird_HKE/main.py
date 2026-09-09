@@ -410,7 +410,6 @@ def parse_args():
     # Required by supporting codebase
     args.modelDir = ''
     args.logDir = ''
-    args.prevModelDir = ''
     
     return args
 

@@ -116,7 +116,7 @@ _C.DATASET.PROB_HALF_BODY = 0.0
 _C.DATASET.NUM_JOINTS_HALF_BODY = 2
 _C.DATASET.COLOR_RGB = False
 
-def _build_phase_cfg():
+def _build_training_cfg():
     phase = CN()
 
     phase.LR_FACTOR = 0.1
@@ -153,16 +153,8 @@ def _build_phase_cfg():
     return phase
 
 
-# train / finetune
-_C.TRAIN = _build_phase_cfg()
-
-_C.FINETUNE = _build_phase_cfg()
-_C.FINETUNE.DATA_DIR = ''
-_C.FINETUNE.SOURCE_DIR = ''
-_C.FINETUNE.SOURCE_MODEL_FILE = ''
-_C.FINETUNE.CKPT_FILE = 'finetune_checkpoint.pth'
-_C.FINETUNE.BEST_MODEL_FILE = 'finetune_model_best.pth'
-_C.FINETUNE.FINAL_MODEL_FILE = 'finetune_final_model.pth'
+# training
+_C.TRAIN = _build_training_cfg()
 
 # testing
 _C.TEST = CN()

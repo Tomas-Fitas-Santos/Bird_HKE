@@ -78,12 +78,6 @@ RUN_DIRECTORY_KEYS = (
     'TEST.OUTPUT_DIR',
 )
 
-OPTIONAL_RUN_DIRECTORY_KEYS = (
-    'FINETUNE.SOURCE_DIR',
-    'FINETUNE.CKPT_DIR',
-    'FINETUNE.LOG_DIR',
-)
-
 
 def _get(config: Any, dotted_key: str) -> Any:
     value = config
@@ -160,16 +154,6 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
                 value = str(_get(config, key)).replace('\\', '/')
             except KeyError:
                 problems.append(f'{key}: missing')
-                continue
-            if required_fragment not in value:
-                problems.append(
-                    f'{key}: {scenario} paths must contain '
-                    f'{required_fragment!r}; found {value!r}'
-                )
-        for key in OPTIONAL_RUN_DIRECTORY_KEYS:
-            try:
-                value = str(_get(config, key)).replace('\\', '/')
-            except KeyError:
                 continue
             if required_fragment not in value:
                 problems.append(
