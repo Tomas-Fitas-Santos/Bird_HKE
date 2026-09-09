@@ -6,6 +6,7 @@
 import os
 import logging
 import time
+import tempfile
 from collections import namedtuple
 from pathlib import Path
 
@@ -79,12 +80,42 @@ def get_optimizer(cfg, model):
     return optimizer
 
 
+def atomic_torch_save(value, destination):
+    """Commit a PyTorch artifact without risking the previous good file.
+
+    The temporary file is written and flushed in the destination directory,
+    then atomically replaces the target.  If the process is interrupted while
+    serializing, the last completed checkpoint remains available for resume.
+    """
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f'.{destination.name}.',
+        suffix='.tmp',
+        dir=str(destination.parent),
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, 'wb') as handle:
+            torch.save(value, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary_path), str(destination))
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def save_checkpoint(states, is_best, output_dir,
                     filename='checkpoint.pth', best_filename='model_best.pth'):
-    torch.save(states, os.path.join(output_dir, filename))
+    atomic_torch_save(states, os.path.join(output_dir, filename))
     if is_best and 'state_dict' in states:
-        torch.save(states['best_state_dict'],
-                   os.path.join(output_dir, best_filename))
+        atomic_torch_save(
+            states['best_state_dict'], os.path.join(output_dir, best_filename)
+        )
 
 
 def get_model_summary(model, *input_tensors, item_length=26, verbose=False):

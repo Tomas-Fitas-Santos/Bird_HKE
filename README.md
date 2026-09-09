@@ -159,6 +159,29 @@ states and the protocol hash, so an interrupted run resumes from the next epoch
 with the same sampling and augmentation stream. Strict mode rejects legacy or
 incompatible checkpoints instead of silently mixing protocols.
 
+Checkpoint and reporting files are committed atomically, so an interruption
+during a write leaves the previous complete file intact. `training_state.json`
+reports the current status, completed/target epoch counts, best validation
+result, checkpoint path, and protocol hash. `run_history.json` preserves every
+start, resume, planned pause, interruption, and completion attempt together
+with its command and environment snapshot. `train_logs.txt` stores one row per
+completed epoch and replaces a replayed epoch instead of duplicating it.
+
+To pause an active run safely, open a second terminal in the repository root
+and submit a stop request using the same experiment YAML:
+
+```bash
+python Bird_HKE/tools/request_training_stop.py \
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml
+```
+
+The trainer finishes the active epoch, atomically commits `checkpoint.pth`,
+marks the run as paused, consumes the request, and exits without writing a
+misleading `final_model.pth`. Resume by running the normal training command
+again with the same YAML. Because `TRAIN.RESUME_FROM_CKPT: true`, it continues
+at the following epoch. Unexpected termination can lose work from the active
+epoch, but the previous completed epoch remains safe.
+
 The CS and OS configs write to `repro_v2/baseline/seed_2026`; the FD configs
 write to `repro_v2/uncertainty/seed_2026`. This preserves previously trained
 models and prevents baseline and uncertainty checkpoints from being mixed.

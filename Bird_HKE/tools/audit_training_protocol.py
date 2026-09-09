@@ -39,7 +39,7 @@ EXPECTED = {
     'DATASET.TEST_SET': 'val',
     'MODEL.NUM_JOINTS': 4,
     'MODEL.INIT_WEIGHTS': True,
-    'MODEL.PRETRAINED': "r''",
+    'MODEL.PRETRAINED': '',
     'MODEL.IMAGE_SIZE': [256, 256],
     'MODEL.HEATMAP_SIZE': [64, 64],
     'MODEL.SIGMA': 2,
@@ -50,6 +50,7 @@ EXPECTED = {
     'TRAIN.GRAD_ACCUM_STEPS': 0,
     'TRAIN.SHUFFLE': True,
     'TRAIN.DROP_LAST': False,
+    'TRAIN.RESUME_FROM_CKPT': True,
     'TRAIN.BEGIN_EPOCH': 0,
     'TRAIN.END_EPOCH': 100,
     'TRAIN.OPTIMIZER': 'adamw',
@@ -160,6 +161,17 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
                     f'{key}: {scenario} paths must contain '
                     f'{required_fragment!r}; found {value!r}'
                 )
+        try:
+            checkpoint_dir = str(_get(config, 'TRAIN.CKPT_DIR')).rstrip('/\\')
+            log_dir = str(_get(config, 'TRAIN.LOG_DIR')).rstrip('/\\')
+            if checkpoint_dir != log_dir:
+                problems.append(
+                    'TRAIN.CKPT_DIR and TRAIN.LOG_DIR must identify the same '
+                    'run directory so checkpoints, stop requests, and reports '
+                    'cannot be mixed across runs'
+                )
+        except KeyError:
+            pass
     except ValueError as exc:
         problems.append(str(exc))
 

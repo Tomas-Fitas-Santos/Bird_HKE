@@ -33,7 +33,7 @@ MODEL:
   NAME: pose_vhr
   NUM_JOINTS: 4
   TARGET_TYPE: gaussian
-  PRETRAINED: r''
+  PRETRAINED: ''
   #PRETRAINED: path/to/pretrained.pth  # set relative to DATA_DIR or absolute
   IMAGE_SIZE:
   - 256

@@ -33,7 +33,7 @@ MODEL:
   NAME: pose_hr_mamba_vit
   NUM_JOINTS: 4
   TARGET_TYPE: gaussian
-  PRETRAINED: r''
+  PRETRAINED: ''
   IMAGE_SIZE:
   - 256
   - 256
