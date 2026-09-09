@@ -111,11 +111,11 @@ MODEL:
 LOSS:
   USE_TARGET_WEIGHT: true
 UNCERTAINTY:
-  ENABLED: false
+  ENABLED: true
 TRAIN:
   RESUME_FROM_CKPT: true
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026' # Where to save/load model checkpoints and where to save final model
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026' # Where to save training logs
+  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026' # Where to save/load model checkpoints and where to save final model
+  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026' # Where to save training logs
   BATCH_SIZE_PER_GPU: 8
   EFFECTIVE_BATCH_SIZE: 64
   SHUFFLE: true
@@ -133,9 +133,9 @@ TRAIN:
 FINETUNE:
   RESUME_FROM_CKPT: true
   DATA_DIR: occlusion_FINETUNE_ebird
-  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
-  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
-  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
+  SOURCE_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026' # Directory containing outputs from train.py; finetune loads final_model.pth or falls back to checkpoint.pth
+  CKPT_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026' # Finetune outputs stay here, but use finetune_* filenames so base training files are preserved
+  LOG_DIR: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026' # Finetune logs stay here, but use finetune_* filenames so base training logs are preserved
   BATCH_SIZE_PER_GPU: 8
   EFFECTIVE_BATCH_SIZE: 64
   SHUFFLE: true
@@ -153,8 +153,8 @@ FINETUNE:
 TEST:
   BATCH_SIZE_PER_GPU: 1
   DETECT_MODEL_FILE: 'Bird_HKE/trained_models/YOLOv8Bird.pt'
-  POSE_MODEL_FILE: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026/model_best.pth'
-  OUTPUT_DIR: 'Bird_HKE/videos_experiments/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/baseline/seed_2026'  # Where to save testing results
+  POSE_MODEL_FILE: 'Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026/model_best.pth'
+  OUTPUT_DIR: 'Bird_HKE/videos_experiments/BirdGaze_Full_Original_Dataset/HR_MAMBA_concat_gate/repro_v2/uncertainty/seed_2026'  # Where to save testing results
   FLIP_TEST: true
   POST_PROCESS: true
   SHIFT_HEATMAP: true
@@ -164,4 +164,3 @@ DEBUG:
   SAVE_BATCH_IMAGES_PRED: false
   SAVE_HEATMAPS_GT: false
   SAVE_HEATMAPS_PRED: false
-

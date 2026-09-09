@@ -54,6 +54,15 @@ uncertainty runs are separate experimental conditions. Both use the same
 images, split membership, augmentations, optimizer protocol, seed set, and
 model-selection validation data.
 
+In the checked-in Phase-2 experiment matrix, uncertainty is enabled only for
+the six FD configurations. Every CS and OS configuration keeps the original
+heatmap/MSE baseline, and the training-protocol audit rejects a config or run
+directory that violates this scenario policy. Before a full FD job, run
+`tools/smoke_test_uncertainty.py` with that YAML on its intended training
+machine. A pass proves that one real batch can complete the probabilistic
+forward pass, loss, backward pass, and optimizer update on that environment; it
+does not replace the full validation and post-hoc calibration stages.
+
 By default, gradients from the quality/visibility auxiliary head are stopped at
 the shared feature map. The head is still learned in the same loop, but it
 cannot improve its own loss by distorting the pose backbone. The probabilistic

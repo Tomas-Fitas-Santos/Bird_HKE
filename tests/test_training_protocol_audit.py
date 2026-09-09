@@ -22,6 +22,20 @@ class TrainingProtocolAuditTests(unittest.TestCase):
                 failures[str(path.relative_to(REPOSITORY_ROOT))] = problems
         self.assertEqual(failures, {})
 
+    def test_uncertainty_is_enabled_only_for_full_dataset_configs(self):
+        experiments = REPOSITORY_ROOT / 'Bird_HKE' / 'experiments'
+        counts = {'FD': 0, 'CS': 0, 'OS': 0}
+        for path in AUDIT.experiment_files(experiments):
+            config, _plan, _problems = AUDIT.audit_file(path)
+            scenario = AUDIT.scenario_from_path(path)
+            counts[scenario] += 1
+            self.assertEqual(
+                config['UNCERTAINTY']['ENABLED'],
+                scenario == 'FD',
+                path.name,
+            )
+        self.assertEqual(counts, {'FD': 6, 'CS': 6, 'OS': 6})
+
     def test_supported_gpu_counts_resolve_to_effective_batch_64(self):
         train = {
             'BATCH_SIZE_PER_GPU': 8,

@@ -159,32 +159,53 @@ states and the protocol hash, so an interrupted run resumes from the next epoch
 with the same sampling and augmentation stream. Strict mode rejects legacy or
 incompatible checkpoints instead of silently mixing protocols.
 
-The supplied configs write to new `repro_v2/baseline/seed_2026` directories, preserving
-the previously trained models. `TRAIN.RESUME_FROM_CKPT: true` is safe within
-that directory: it resumes only a matching reproducible run. For an independent
-repeat, use another seed and separate output directories. All architectures in
-one comparison must use the same seed set; seeds 2026, 2027, and 2028 are a
-reasonable three-run campaign for reporting mean and standard deviation.
+The CS and OS configs write to `repro_v2/baseline/seed_2026`; the FD configs
+write to `repro_v2/uncertainty/seed_2026`. This preserves previously trained
+models and prevents baseline and uncertainty checkpoints from being mixed.
+`TRAIN.RESUME_FROM_CKPT: true` is safe within those directories: it resumes
+only a matching reproducible run. For an independent repeat, use another seed
+and separate output directories. All architectures in one comparison must use
+the same seed set; seeds 2026, 2027, and 2028 are a reasonable three-run
+campaign for reporting mean and standard deviation.
 
 Deterministic settings and recorded environments make runs scientifically
 reproducible, but bit-for-bit equality between different GPU architectures is
 not guaranteed by CUDA. Comparisons should therefore use the same protocol and
 seed set and report variation across seeds.
 
-### Optional uncertainty-aware training
+### FD uncertainty-aware training
 
-The same architecture config can be trained in either mode. The checked-in
-YAMLs explicitly set `UNCERTAINTY.ENABLED: false`, which preserves the original
-heatmap tensor and MSE training path. To train its matched uncertainty variant,
-enable the module and use a separate run directory:
+The Phase-2 experiment policy enables uncertainty for all six Full Original
+Dataset (FD) configs and disables it for every Corrected Subset (CS) and
+Original Subset (OS) config. `audit_training_protocol.py` enforces this policy,
+including the separate output namespaces. Run it before starting a campaign:
+
+```bash
+python Bird_HKE/tools/audit_training_protocol.py
+```
+
+On each training machine, run a one-batch forward/backward smoke test for the
+FD model before starting its full job. It uses the configured physical batch
+size and real training data, checks normalized probability maps, all UQ output
+shapes, finite loss, and gradients in both the pose network and reliability
+head. It does not write checkpoints or logs:
+
+```bash
+python Bird_HKE/tools/smoke_test_uncertainty.py \
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml
+```
+
+If it prints `Uncertainty training smoke test: PASS`, start the full run with
+the same YAML:
 
 ```bash
 python Bird_HKE/tools/train.py \
-  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml \
-  UNCERTAINTY.ENABLED true \
-  TRAIN.CKPT_DIR Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026 \
-  TRAIN.LOG_DIR Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml
 ```
+
+Repeat those two commands with each of the six FD YAMLs. If the dataset is not
+at the path stored in the YAML, append `DATASET.ROOT /absolute/dataset/path` to
+both commands. Do not add `UNCERTAINTY.ENABLED true` to CS or OS runs.
 
 When enabled, each keypoint output is a normalized spatial probability map.
 Training minimizes expected bounded keypoint-similarity risk and jointly learns
@@ -203,13 +224,12 @@ and per-keypoint split-conformal highest-density regions using only
 python Bird_HKE/tools/calibrate_uncertainty.py \
   --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml \
   --checkpoint Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/model_best.pth \
-  --output Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/uncertainty_calibration.json \
-  UNCERTAINTY.ENABLED true
+  --output Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/uncertainty_calibration.json
 ```
 
-For video inference with that model, set `UNCERTAINTY.ENABLED`,
-`TEST.POSE_MODEL_FILE`, and `UNCERTAINTY.CALIBRATION_FILE` to the matching
-checkpoint and calibration JSON. Never combine a calibration file with a
+For video inference with that model, set `UNCERTAINTY.CALIBRATION_FILE` to the
+matching calibration JSON; the FD YAML already selects uncertainty and the
+corresponding `TEST.POSE_MODEL_FILE`. Never combine a calibration file with a
 different architecture, seed, or checkpoint; the video loader verifies the
 stored checkpoint SHA-256. Uncertainty-enabled video runs write
 `uncertainty_initial.json` with per-frame, per-keypoint quality, visibility

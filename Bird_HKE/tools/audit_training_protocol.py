@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Tuple
@@ -44,7 +45,6 @@ EXPECTED = {
     'MODEL.SIGMA': 2,
     'MODEL.TARGET_TYPE': 'gaussian',
     'LOSS.USE_TARGET_WEIGHT': True,
-    'UNCERTAINTY.ENABLED': False,
     'TRAIN.BATCH_SIZE_PER_GPU': 8,
     'TRAIN.EFFECTIVE_BATCH_SIZE': 64,
     'TRAIN.GRAD_ACCUM_STEPS': 0,
@@ -63,6 +63,26 @@ EXPECTED = {
     'TEST.POST_PROCESS': True,
     'TEST.SHIFT_HEATMAP': True,
 }
+
+
+SCENARIO_UNCERTAINTY = {
+    'FD': True,
+    'CS': False,
+    'OS': False,
+}
+
+RUN_DIRECTORY_KEYS = (
+    'TRAIN.CKPT_DIR',
+    'TRAIN.LOG_DIR',
+    'TEST.POSE_MODEL_FILE',
+    'TEST.OUTPUT_DIR',
+)
+
+OPTIONAL_RUN_DIRECTORY_KEYS = (
+    'FINETUNE.SOURCE_DIR',
+    'FINETUNE.CKPT_DIR',
+    'FINETUNE.LOG_DIR',
+)
 
 
 def _get(config: Any, dotted_key: str) -> Any:
@@ -86,6 +106,16 @@ def _load(path: Path) -> dict:
     return config
 
 
+def scenario_from_path(path: Path) -> str:
+    """Return the FD, CS, or OS scenario encoded in an experiment filename."""
+    match = re.search(r'(?:^|_)(FD|CS|OS)(?:_|$)', path.stem)
+    if match is None:
+        raise ValueError(
+            f'{path.name}: filename must contain an FD, CS, or OS scenario token'
+        )
+    return match.group(1)
+
+
 def _resolve_batch_plan(train_cfg: dict, devices: int) -> Tuple[int, int, int]:
     plan = resolve_batch_plan(train_cfg, devices)
     return (
@@ -107,6 +137,47 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
             continue
         if actual != expected:
             problems.append(f'{key}: expected {expected!r}, found {actual!r}')
+
+    try:
+        scenario = scenario_from_path(path)
+        uncertainty_expected = SCENARIO_UNCERTAINTY[scenario]
+        try:
+            uncertainty_actual = _get(config, 'UNCERTAINTY.ENABLED')
+        except KeyError:
+            uncertainty_actual = None
+            problems.append('UNCERTAINTY.ENABLED: missing')
+        if uncertainty_actual is not uncertainty_expected:
+            problems.append(
+                'UNCERTAINTY.ENABLED: '
+                f'{scenario} requires {uncertainty_expected!r}, '
+                f'found {uncertainty_actual!r}'
+            )
+
+        namespace = 'uncertainty' if uncertainty_expected else 'baseline'
+        required_fragment = f'/repro_v2/{namespace}/'
+        for key in RUN_DIRECTORY_KEYS:
+            try:
+                value = str(_get(config, key)).replace('\\', '/')
+            except KeyError:
+                problems.append(f'{key}: missing')
+                continue
+            if required_fragment not in value:
+                problems.append(
+                    f'{key}: {scenario} paths must contain '
+                    f'{required_fragment!r}; found {value!r}'
+                )
+        for key in OPTIONAL_RUN_DIRECTORY_KEYS:
+            try:
+                value = str(_get(config, key)).replace('\\', '/')
+            except KeyError:
+                continue
+            if required_fragment not in value:
+                problems.append(
+                    f'{key}: {scenario} paths must contain '
+                    f'{required_fragment!r}; found {value!r}'
+                )
+    except ValueError as exc:
+        problems.append(str(exc))
 
     try:
         plan = _resolve_batch_plan(config['TRAIN'], max(1, len(config['GPUS'])))
@@ -139,16 +210,21 @@ def main() -> int:
         return 2
 
     failures = 0
-    print('configuration\tmodel\tdataset\tmicro/GPU\taccum\teffective\tstatus')
+    print('configuration\tmodel\tscenario\tUQ\tmicro/GPU\taccum\teffective\tstatus')
     for path in paths:
         config, plan, problems = audit_file(path)
         status = 'PASS' if not problems else 'FAIL'
         if problems:
             failures += 1
         relative = path.relative_to(REPOSITORY_ROOT)
+        try:
+            scenario = scenario_from_path(path)
+        except ValueError:
+            scenario = '-'
+        uncertainty = config.get('UNCERTAINTY', {}).get('ENABLED', '-')
         print(
             f'{relative}\t{config.get("MODEL", {}).get("NAME", "-")}\t'
-            f'{config.get("DATASET", {}).get("TRAIN_SET", "-")}\t'
+            f'{scenario}\t{uncertainty}\t'
             f'{plan[0] if plan else "-"}\t'
             f'{plan[1] if plan else "-"}\t'
             f'{plan[2] if plan else "-"}\t{status}'
