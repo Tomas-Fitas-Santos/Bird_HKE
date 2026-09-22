@@ -23,7 +23,7 @@ except ImportError:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 _SUMMARY_KEYS = [
-    'config', 'video', 'flags', 'params_M', 'gflops',
+    'config', 'video', 'flags', 'params_M', 'total_params_M', 'gmacs', 'gflops',
     'initial_PCK@0.05_mean', 'initial_PCK@0.05_visible', 'initial_PCK@0.05_occluded',
     'initial_PCK@0.05_threshold_px',
     'initial_normalized_jitter', 'initial_velocity_error', 'initial_acceleration_error',
@@ -83,6 +83,8 @@ def _collect_run_results(yaml_path, vid, flags):
         'video':   Path(vid['video']).stem,
         'flags':   ' '.join(flags),
         'params_M': '',
+        'total_params_M': '',
+        'gmacs':   '',
         'gflops':   '',
     }
     for k in _SUMMARY_KEYS:
@@ -102,6 +104,8 @@ def _collect_run_results(yaml_path, vid, flags):
             with open(stats_path) as f:
                 stats = json.load(f)
             row['params_M'] = stats.get('params_M', '')
+            row['total_params_M'] = stats.get('total_params_M', '')
+            row['gmacs'] = stats.get('gmacs', '')
             row['gflops']   = stats.get('gflops', '')
         except Exception:
             pass

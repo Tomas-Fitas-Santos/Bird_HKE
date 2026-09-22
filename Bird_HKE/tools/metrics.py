@@ -223,7 +223,7 @@ def evaluate_uncertainty_predictions(
             visibility_target.extend((known_visibility[:count] > 0).astype(float))
 
     quality_ece, quality_brier = _calibration_metrics(
-        quality_values, similarity_values
+        quality_values, correct_values
     )
     visibility_ece, visibility_brier = _calibration_metrics(
         visibility_probability, visibility_target

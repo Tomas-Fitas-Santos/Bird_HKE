@@ -23,8 +23,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dataset import birdgaze  # noqa: E402
 from lib.config.default import _C as cfg  # noqa: E402
 from lib.config.default import update_config  # noqa: E402
+from lib.core.loss import JointsMSELoss  # noqa: E402
 from lib.core.loss import build_pose_criterion  # noqa: E402
 from lib.utilities.reproducibility import seed_everything  # noqa: E402
+from lib.utilities.utilities import clip_pose_and_auxiliary_gradients  # noqa: E402
 from lib.utilities.utilities import get_optimizer  # noqa: E402
 from models import get_pose_net  # noqa: E402
 
@@ -99,7 +101,7 @@ def _gradient_norms(model):
         if not bool(torch.isfinite(parameter.grad).all()):
             raise RuntimeError(f'Non-finite gradient in {name}')
         value = float(parameter.grad.detach().float().square().sum())
-        group = 'uncertainty_head' if 'probabilistic_output.reliability' in name else 'pose_network'
+        group = 'uncertainty_head' if 'probabilistic_output.' in name else 'pose_network'
         squared['model'] += value
         squared[group] += value
         counts['model'] += 1
@@ -213,10 +215,38 @@ def main():
     )
     if not bool(torch.isfinite(loss)):
         raise RuntimeError(f'Loss is not finite: {float(loss.detach())}')
+    baseline_criterion = JointsMSELoss(
+        use_target_weight=cfg.LOSS.USE_TARGET_WEIGHT
+    ).to(device)
+    pose_only_loss = sum(
+        baseline_criterion(
+            output['location_logits'], target, target_weight, meta
+        )
+        for output in output_items
+    )
+    combined_pose_gradients = torch.autograd.grad(
+        loss,
+        [output['location_logits'] for output in output_items],
+        retain_graph=True,
+    )
+    baseline_pose_gradients = torch.autograd.grad(
+        pose_only_loss,
+        [output['location_logits'] for output in output_items],
+        retain_graph=True,
+    )
+    if not all(
+        torch.equal(combined, baseline)
+        for combined, baseline in zip(
+            combined_pose_gradients, baseline_pose_gradients
+        )
+    ):
+        raise RuntimeError(
+            'Auxiliary uncertainty changed the pose-loss gradient'
+        )
     loss.backward()
     gradient_norms = _gradient_norms(model)
     if cfg.TRAIN.CLIP_GRAD_NORM > 0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.CLIP_GRAD_NORM)
+        clip_pose_and_auxiliary_gradients(model, cfg.TRAIN.CLIP_GRAD_NORM)
     optimizer.step()
     torch.cuda.synchronize(device)
 
@@ -231,6 +261,7 @@ def main():
     print(f'  probability shape:   {tuple(_last_output(outputs)["probability_maps"].shape)}')
     print(f'  normalization error: {normalization_error:.3e}')
     print(f'  loss:                {float(loss.detach()):.6f}')
+    print('  pose gradient match: exact')
     for key, value in components.items():
         print(f'  {key} loss:'.ljust(23) + f'{value:.6f}')
     for key, value in gradient_norms.items():

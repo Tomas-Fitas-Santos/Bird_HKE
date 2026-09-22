@@ -1,8 +1,10 @@
 import random
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] / 'Bird_HKE'
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -17,8 +19,10 @@ try:
     from lib.utilities.reproducibility import capture_rng_state
     from lib.utilities.reproducibility import protocol_hash
     from lib.utilities.reproducibility import restore_rng_state
+    from lib.utilities.reproducibility import resume_environment
     from lib.utilities.reproducibility import seed_everything
     from lib.utilities.reproducibility import training_protocol
+    from lib.utilities.utilities import atomic_torch_save
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError:
     DEPENDENCIES_AVAILABLE = False
@@ -55,6 +59,27 @@ class BatchPlanningTests(unittest.TestCase):
     'full training dependencies (PyTorch and yacs) are not installed',
 )
 class RuntimeReproducibilityTests(unittest.TestCase):
+
+    def test_atomic_checkpoint_failure_preserves_previous_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / 'checkpoint.pth'
+            atomic_torch_save({'epoch': 3}, checkpoint)
+            with mock.patch(
+                'lib.utilities.utilities.torch.save',
+                side_effect=RuntimeError('simulated interrupted write'),
+            ):
+                with self.assertRaises(RuntimeError):
+                    atomic_torch_save({'epoch': 4}, checkpoint)
+            try:
+                restored = torch.load(checkpoint, weights_only=False)
+            except TypeError:
+                restored = torch.load(checkpoint)
+            self.assertEqual(restored['epoch'], 3)
+            temporary_files = [
+                path for path in checkpoint.parent.iterdir()
+                if path.name.startswith(f'.{checkpoint.name}.')
+            ]
+            self.assertEqual(temporary_files, [])
 
     def test_rng_state_restores_all_cpu_sources_and_loader_generator(self):
         seed_everything(17)
@@ -105,6 +130,33 @@ class RuntimeReproducibilityTests(unittest.TestCase):
             protocol_hash(training_protocol(baseline, plan)),
             protocol_hash(training_protocol(uncertainty, plan)),
         )
+
+    def test_protocol_hash_changes_when_validation_decoder_changes(self):
+        first = _C.clone()
+        second = _C.clone()
+        second.defrost()
+        second.TEST.FLIP_TEST = not first.TEST.FLIP_TEST
+        second.freeze()
+        plan = resolve_batch_plan(first.TRAIN, 1)
+        self.assertNotEqual(
+            protocol_hash(training_protocol(first, plan)),
+            protocol_hash(training_protocol(second, plan)),
+        )
+
+    def test_resume_environment_ignores_report_timestamps(self):
+        first = {
+            'recorded_at_utc': 'first',
+            'git_revision': 'abc',
+            'python': '3.x',
+            'pytorch': '2.x',
+            'cuda_runtime': '12.x',
+            'cudnn': 9000,
+            'configured_gpu_ids': [0],
+            'gpu_names': ['GPU'],
+            'package_versions': {'torch': '2.x'},
+        }
+        second = dict(first, recorded_at_utc='second')
+        self.assertEqual(resume_environment(first), resume_environment(second))
 
 
 if __name__ == '__main__':

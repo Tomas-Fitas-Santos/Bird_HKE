@@ -121,9 +121,18 @@ class ProbabilisticPoseOutput(nn.Module):
     def __init__(self, cfg, in_channels: int, num_joints: int) -> None:
         super().__init__()
         uq = cfg['UNCERTAINTY']
+        if bool(uq['RELIABILITY_GRADIENT_TO_BACKBONE']):
+            raise ValueError(
+                'Passive uncertainty requires '
+                'RELIABILITY_GRADIENT_TO_BACKBONE: false'
+            )
+        if float(uq['HEAD_DROPOUT']) != 0.0:
+            raise ValueError(
+                'Passive uncertainty requires HEAD_DROPOUT: 0.0 so the '
+                'auxiliary head cannot consume training RNG between pose steps'
+            )
         self.distribution = uq['DISTRIBUTION']
         self.temperature = float(uq['TEMPERATURE'])
-        self.gradient_to_backbone = bool(uq['RELIABILITY_GRADIENT_TO_BACKBONE'])
         self.reliability = KeypointReliabilityHead(
             in_channels=in_channels,
             num_joints=num_joints,
@@ -138,12 +147,8 @@ class ProbabilisticPoseOutput(nn.Module):
         probability_maps = spatial_probability(
             location_logits, self.distribution, self.temperature
         )
-        reliability_features = features if self.gradient_to_backbone else features.detach()
-        reliability_probability = (
-            probability_maps if self.gradient_to_backbone else probability_maps.detach()
-        )
         quality_logits, visibility_logits = self.reliability(
-            reliability_features, reliability_probability
+            features.detach(), probability_maps.detach()
         )
         return {
             'location_logits': location_logits,
@@ -151,3 +156,13 @@ class ProbabilisticPoseOutput(nn.Module):
             'quality_logits': quality_logits,
             'visibility_logits': visibility_logits,
         }
+
+
+def build_probabilistic_pose_output(
+    cfg, in_channels: int, num_joints: int
+) -> ProbabilisticPoseOutput:
+    """Build the auxiliary head without advancing the pose-model RNG stream."""
+    seed = int(cfg['REPRODUCIBILITY']['SEED']) + 104729
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        return ProbabilisticPoseOutput(cfg, in_channels, num_joints)

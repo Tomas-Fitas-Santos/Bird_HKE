@@ -10,7 +10,10 @@ import platform
 import random
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -130,8 +133,9 @@ def training_protocol(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
                 'ENABLED', 'DISTRIBUTION', 'TEMPERATURE',
                 'HEAD_HIDDEN_CHANNELS', 'JOINT_EMBED_DIM', 'HEAD_DROPOUT',
                 'RELIABILITY_GRADIENT_TO_BACKBONE',
-                'BKS_SIGMA_FRACTION', 'LOCATION_WEIGHT', 'SMOOTHNESS_WEIGHT',
-                'QUALITY_WEIGHT', 'VISIBILITY_WEIGHT', 'SYNTHETIC_OCCLUSION',
+                'QUALITY_PCK_THRESHOLD',
+                'EVALUATION_SIMILARITY_SIGMA_FRACTION',
+                'QUALITY_WEIGHT', 'VISIBILITY_WEIGHT',
                 'BALANCE_VISIBILITY_CLASSES',
             )
         },
@@ -156,6 +160,16 @@ def training_protocol(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
                 'DROP_LAST',
             )
         },
+        # Validation settings affect epoch selection and therefore belong to
+        # the reproducible training contract even though they do not affect
+        # gradient computation directly.
+        'validation': {
+            key: _plain(getattr(cfg.TEST, key))
+            for key in (
+                'BATCH_SIZE_PER_GPU', 'FLIP_TEST', 'POST_PROCESS',
+                'SHIFT_HEATMAP',
+            )
+        },
         # Include the complete plan so strict resume cannot silently switch
         # device count or accumulation boundaries mid-run.
         'resolved_batch': asdict(plan),
@@ -174,6 +188,37 @@ def protocol_hash(protocol: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+def utc_timestamp() -> str:
+    """Return an ISO-8601 UTC timestamp suitable for run metadata."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_write_json(path: str, payload: Any) -> None:
+    """Atomically replace a JSON report, preserving the previous good copy."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f'.{destination.name}.',
+        suffix='.tmp',
+        dir=str(destination.parent),
+        text=True,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary_path), str(destination))
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _git_revision() -> Optional[str]:
     try:
         return subprocess.check_output(
@@ -183,6 +228,29 @@ def _git_revision() -> Optional[str]:
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _git_is_dirty() -> Optional[bool]:
+    try:
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain', '--untracked-files=no'],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return bool(status.strip())
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def resume_environment(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Return environment fields that must stay fixed across strict resume."""
+    return {
+        key: report.get(key)
+        for key in (
+            'git_revision', 'python', 'pytorch', 'cuda_runtime', 'cudnn',
+            'configured_gpu_ids', 'gpu_names', 'package_versions',
+        )
+    }
 
 
 def environment_report(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
@@ -207,11 +275,13 @@ def environment_report(cfg: Any, plan: BatchPlan) -> Dict[str, Any]:
         except importlib.metadata.PackageNotFoundError:
             packages[package] = None
     return {
+        'recorded_at_utc': utc_timestamp(),
         'protocol_hash': protocol_hash(protocol),
         'protocol': protocol,
         'calibration_annotation_sha256': _file_sha256(calibration_path),
         'resolved_batch': asdict(plan),
         'git_revision': _git_revision(),
+        'git_dirty': _git_is_dirty(),
         'platform': platform.platform(),
         'python': sys.version,
         'pytorch': torch.__version__,

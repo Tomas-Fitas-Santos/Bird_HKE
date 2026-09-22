@@ -3,7 +3,6 @@ Bird Pose Estimation Pipeline
 Main entry point for video processing with object detection and pose estimation.
 """
 
-import re
 import argparse
 import hashlib
 import json
@@ -14,7 +13,8 @@ from pathlib import Path
 
 from lib.config import cfg, update_config
 from models import get_pose_net
-from lib.utilities.utilities import get_model_summary
+from lib.utilities.model_complexity import profile_model_complexity
+from lib.utilities.model_complexity import write_model_complexity_json
 from tools.utils import read_video_frames
 from tools.utils import get_yolo_model
 from tools.bird_detector import BirdDetector
@@ -85,23 +85,29 @@ class BirdPoseEstimationPipeline:
         else:
             print('Warning: No pose model file specified in config')
         
-        # ── compute & save model stats (params + GFLOPs) ──
+        # Compute the same parameter/MAC/FLOP report used during training.
         try:
-            img_h, img_w = (cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE')
+            img_w, img_h = (cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE')
                             else (256, 256))
             model.to(self.device)
             dummy = torch.zeros(1, 3, img_h, img_w).to(self.device)
-            summary_str = get_model_summary(model, dummy, verbose=False)
-            params_m = sum(p.numel() for p in model.parameters()) / 1e6
-            m = re.search(
-                r'Total Multiply Adds.*?:\s*([0-9,\.]+)\s*GFLOPs',
-                summary_str
-            )
-            gflops = float(m.group(1).replace(',', '')) if m else 0.0
+            complexity = profile_model_complexity(model, dummy)
             stats_path = self.results_dir / 'model_stats.json'
-            with open(stats_path, 'w') as _f:
-                json.dump({'params_M': round(params_m, 4), 'gflops': round(gflops, 4)}, _f, indent=2)
-            print(f'Model stats saved: {params_m:.2f}M params, {gflops:.4f} GFLOPs')
+            write_model_complexity_json(
+                stats_path,
+                complexity,
+                metadata={
+                    'model_name': str(cfg.MODEL.NAME),
+                    'uncertainty_enabled': bool(cfg.UNCERTAINTY.ENABLED),
+                    'checkpoint_file': str(cfg.TEST.POSE_MODEL_FILE),
+                },
+            )
+            print(
+                'Model stats saved: '
+                f'{complexity.trainable_parameters / 1e6:.6f}M trainable '
+                f'parameters, {complexity.gmacs:.6f} GMACs, '
+                f'{complexity.gflops:.6f} GFLOPs'
+            )
         except Exception as _e:
             print(f'Warning: could not compute model stats: {_e}')
 
@@ -252,7 +258,9 @@ class BirdPoseEstimationPipeline:
                 self.gt_annotations,
                 self.results_dir,
                 pred_bboxes=bboxes,
-                similarity_sigma_fraction=cfg.UNCERTAINTY.BKS_SIGMA_FRACTION,
+                similarity_sigma_fraction=(
+                    cfg.UNCERTAINTY.EVALUATION_SIMILARITY_SIGMA_FRACTION
+                ),
             )
 
         print("\n=== Evaluation Metrics (Initial) ===")

@@ -134,6 +134,25 @@ python Bird_HKE/tools/audit_training_protocol.py
 python -m unittest discover -s tests
 ```
 
+Profile all six FD architectures with the exact configured 256 x 256 input and
+uncertainty setting:
+
+```bash
+python Bird_HKE/tools/profile_model_complexity.py \
+  --output model_complexity_fd.json
+```
+
+The profiler reports total, trainable, and uncertainty-head parameters. It
+also reports both GMACs and GFLOPs: one multiply-accumulate is one MAC but two
+floating-point operations, so `GFLOPs = 2 x GMACs`. Convolutions (including
+grouped and transposed convolutions), token-wise linear projections, attention
+matrix products, Mamba projections/causal convolutions/selective scans, and
+the uncertainty spatial reduction are included. Normalization, activations,
+probability normalization, interpolation, tensor rearrangements, biases, and
+residual additions are excluded under the documented architecture-complexity
+convention. Use GMACs—not the new GFLOPs field—when comparing with an older
+table that called one multiply-accumulate one "FLOP."
+
 The shared baseline protocol fixes the following values across architectures:
 
 - input/heatmap size: 256 x 256 / 64 x 64; Gaussian sigma: 2
@@ -152,15 +171,41 @@ larger models run on stronger or multi-GPU machines without changing the
 per-GPU BatchNorm batch or the effective optimizer batch. The effective batch
 must divide exactly; incompatible GPU counts fail before training begins.
 
-Each run writes `resolved_config.yaml` and `environment.json` to its log
-directory. The latter records the Git revision, protocol hash, package/runtime
+Each run writes `resolved_config.yaml`, `environment.json`,
+`model_summary.txt`, and `model_complexity.json` to its log directory. The
+complexity JSON records the input shape, counting convention, operation
+breakdown, total/trainable/uncertainty-head parameters, GMACs, and GFLOPs. The
+environment report records the Git revision, protocol hash, package/runtime
 versions, GPU names, and resolved batch plan. Checkpoints also contain all RNG
 states and the protocol hash, so an interrupted run resumes from the next epoch
 with the same sampling and augmentation stream. Strict mode rejects legacy or
 incompatible checkpoints instead of silently mixing protocols.
 
-The CS and OS configs write to `repro_v2/baseline/seed_2026`; the FD configs
-write to `repro_v2/uncertainty/seed_2026`. This preserves previously trained
+Checkpoint and reporting files are committed atomically, so an interruption
+during a write leaves the previous complete file intact. `training_state.json`
+reports the current status, completed/target epoch counts, best validation
+result, checkpoint path, and protocol hash. `run_history.json` preserves every
+start, resume, planned pause, interruption, and completion attempt together
+with its command and environment snapshot. `train_logs.txt` stores one row per
+completed epoch and replaces a replayed epoch instead of duplicating it.
+
+To pause an active run safely, open a second terminal in the repository root
+and submit a stop request using the same experiment YAML:
+
+```bash
+python Bird_HKE/tools/request_training_stop.py \
+  --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml
+```
+
+The trainer finishes the active epoch, atomically commits `checkpoint.pth`,
+marks the run as paused, consumes the request, and exits without writing a
+misleading `final_model.pth`. Resume by running the normal training command
+again with the same YAML. Because `TRAIN.RESUME_FROM_CKPT: true`, it continues
+at the following epoch. Unexpected termination can lose work from the active
+epoch, but the previous completed epoch remains safe.
+
+The CS and OS configs write to `repro_v2/baseline/seed_2026`; the corrected FD
+configs write to `repro_v3/uncertainty/seed_2026`. This preserves previously trained
 models and prevents baseline and uncertainty checkpoints from being mixed.
 `TRAIN.RESUME_FROM_CKPT: true` is safe within those directories: it resumes
 only a matching reproducible run. For an independent repeat, use another seed
@@ -187,8 +232,9 @@ python Bird_HKE/tools/audit_training_protocol.py
 On each training machine, run a one-batch forward/backward smoke test for the
 FD model before starting its full job. It uses the configured physical batch
 size and real training data, checks normalized probability maps, all UQ output
-shapes, finite loss, and gradients in both the pose network and reliability
-head. It does not write checkpoints or logs:
+shapes, finite loss, gradients in both parameter groups, and exact equality
+between baseline and uncertainty-path pose gradients. It does not write
+checkpoints or logs:
 
 ```bash
 python Bird_HKE/tools/smoke_test_uncertainty.py \
@@ -207,14 +253,14 @@ Repeat those two commands with each of the six FD YAMLs. If the dataset is not
 at the path stored in the YAML, append `DATASET.ROOT /absolute/dataset/path` to
 both commands. Do not add `UNCERTAINTY.ENABLED true` to CS or OS runs.
 
-When enabled, each keypoint output is a normalized spatial probability map.
-Training minimizes expected bounded keypoint-similarity risk and jointly learns
-two per-keypoint auxiliary outputs: localization quality and visibility.
-Localization is supervised wherever a coordinate exists, including future
-fully annotated occlusions. Visibility is supervised only where the JSON has a
-visibility label; eBird samples without that field are masked from this loss.
-Landmark-centred synthetic occlusions provide additional hidden-point examples
-without inventing coordinates.
+When enabled, the original four pose heatmaps still use exactly the original
+visibility-masked MSE, and coordinates still use the original heatmap decoder.
+A detached auxiliary head learns two additional per-keypoint outputs: the
+probability that the unchanged pose estimate is correct at the training-log PCK
+threshold, and visibility. Its gradients, optimizer grouping, and clipping are
+isolated from the pose network. Visibility is supervised only where the JSON
+has a visibility label; eBird samples without that field are masked. No
+uncertainty-specific image augmentation is applied.
 
 After selecting the best checkpoint with `val.json`, fit post-hoc temperatures
 and per-keypoint split-conformal highest-density regions using only
@@ -223,8 +269,8 @@ and per-keypoint split-conformal highest-density regions using only
 ```bash
 python Bird_HKE/tools/calibrate_uncertainty.py \
   --cfg Bird_HKE/experiments/HRNet/hrnet_w32_birdgaze_FD.yaml \
-  --checkpoint Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/model_best.pth \
-  --output Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v2/uncertainty/seed_2026/uncertainty_calibration.json
+  --checkpoint Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v3/uncertainty/seed_2026/model_best.pth \
+  --output Bird_HKE/trained_models/BirdGaze_Full_Original_Dataset/HRNet_w32_birdgaze/repro_v3/uncertainty/seed_2026/uncertainty_calibration.json
 ```
 
 For video inference with that model, set `UNCERTAINTY.CALIBRATION_FILE` to the

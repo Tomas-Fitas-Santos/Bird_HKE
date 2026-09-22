@@ -58,9 +58,6 @@ class JointsDataset(Dataset):
         self.use_different_joints_weight = cfg.LOSS.USE_DIFFERENT_JOINTS_WEIGHT
         self.joints_weight = 1
 
-        self.uncertainty_enabled = bool(cfg.UNCERTAINTY.ENABLED)
-        self.synthetic_occlusion = cfg.UNCERTAINTY.SYNTHETIC_OCCLUSION
-
         self.transform = transform
         self.db = []
 
@@ -151,8 +148,6 @@ class JointsDataset(Dataset):
         visibility_target = db_rec.get(
             'visibility_target', joints_vis[:, :1]
         ).copy()
-        synthetic_occluded = np.zeros((self.num_joints, 1), dtype=np.float32)
-
         c = db_rec['center']
         s = db_rec['scale']
         score = db_rec['score'] if 'score' in db_rec else 1
@@ -217,20 +212,6 @@ class JointsDataset(Dataset):
             if coordinate_valid[i, 0] > 0.0:
                 joints[i, 0:2] = affine_transform(joints[i, 0:2], trans)
 
-        if (
-            self.is_train
-            and self.uncertainty_enabled
-            and bool(self.synthetic_occlusion.ENABLED)
-        ):
-            input, synthetic_occluded = self._apply_synthetic_occlusion(
-                input,
-                joints,
-                coordinate_valid,
-                joints_vis,
-                visibility_known,
-                visibility_target,
-            )
-
         if self.transform:
             input = self.transform(input)
 
@@ -248,7 +229,6 @@ class JointsDataset(Dataset):
             'coordinate_valid': coordinate_valid[:, :1],
             'visibility_known': visibility_known,
             'visibility_target': visibility_target,
-            'synthetic_occluded': synthetic_occluded,
             'source': db_rec.get('source', 'unknown'),
             'center': c,
             'scale': s,
@@ -262,71 +242,6 @@ class JointsDataset(Dataset):
     def _swap_joint_rows(self, values):
         for left, right in self.flip_pairs:
             values[[left, right]] = values[[right, left]]
-
-    def _apply_synthetic_occlusion(
-        self,
-        image,
-        joints,
-        coordinate_valid,
-        joints_vis,
-        visibility_known,
-        visibility_target,
-    ):
-        """Mask landmark-centred rectangles without discarding coordinates."""
-        occluded = np.zeros((self.num_joints, 1), dtype=np.float32)
-        probability = float(self.synthetic_occlusion.PROBABILITY)
-        if np.random.random() >= probability:
-            return image, occluded
-
-        candidates = np.flatnonzero(coordinate_valid[:, 0] > 0)
-        if candidates.size == 0:
-            return image, occluded
-
-        max_keypoints = max(1, int(self.synthetic_occlusion.MAX_KEYPOINTS))
-        count = min(max_keypoints, candidates.size)
-        selected = np.random.choice(candidates, size=count, replace=False)
-        height, width = image.shape[:2]
-        min_fraction = float(self.synthetic_occlusion.MIN_SIZE_FRACTION)
-        max_fraction = float(self.synthetic_occlusion.MAX_SIZE_FRACTION)
-        if not 0 < min_fraction <= max_fraction <= 1:
-            raise ValueError(
-                'synthetic occlusion fractions must satisfy 0 < min <= max <= 1'
-            )
-
-        fill = np.mean(image.reshape(-1, image.shape[-1]), axis=0)
-        for joint_index in np.atleast_1d(selected):
-            center_x, center_y = joints[int(joint_index), :2]
-            if not (0 <= center_x < width and 0 <= center_y < height):
-                continue
-            box_width = max(
-                1, int(round(width * np.random.uniform(min_fraction, max_fraction)))
-            )
-            box_height = max(
-                1, int(round(height * np.random.uniform(min_fraction, max_fraction)))
-            )
-            x1 = max(0, int(round(center_x - box_width / 2)))
-            y1 = max(0, int(round(center_y - box_height / 2)))
-            x2 = min(width, x1 + box_width)
-            y2 = min(height, y1 + box_height)
-            image[y1:y2, x1:x2] = fill
-
-            # Bird-head landmarks are close together.  If the rectangle also
-            # covers another annotated point, label that point as synthetically
-            # hidden as well instead of creating contradictory supervision.
-            inside = (
-                (coordinate_valid[:, 0] > 0)
-                & (joints[:, 0] >= x1)
-                & (joints[:, 0] < x2)
-                & (joints[:, 1] >= y1)
-                & (joints[:, 1] < y2)
-            )
-            occluded[inside, 0] = 1.0
-
-        affected = occluded[:, 0] > 0
-        joints_vis[affected, :] = 0.0
-        visibility_known[affected, 0] = 1.0
-        visibility_target[affected, 0] = 0.0
-        return image, occluded
 
     def select_data(self, db):
         db_selected = []

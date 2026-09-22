@@ -23,7 +23,6 @@ EXPECTED = {
     'CUDNN.BENCHMARK': False,
     'CUDNN.DETERMINISTIC': True,
     'CUDNN.ENABLED': True,
-    'REPRODUCIBILITY.PROTOCOL': 'bird_hke_repro_v2',
     'REPRODUCIBILITY.SEED': 2026,
     'REPRODUCIBILITY.STRICT': True,
     'REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS': True,
@@ -39,7 +38,7 @@ EXPECTED = {
     'DATASET.TEST_SET': 'val',
     'MODEL.NUM_JOINTS': 4,
     'MODEL.INIT_WEIGHTS': True,
-    'MODEL.PRETRAINED': "r''",
+    'MODEL.PRETRAINED': '',
     'MODEL.IMAGE_SIZE': [256, 256],
     'MODEL.HEATMAP_SIZE': [64, 64],
     'MODEL.SIGMA': 2,
@@ -50,6 +49,7 @@ EXPECTED = {
     'TRAIN.GRAD_ACCUM_STEPS': 0,
     'TRAIN.SHUFFLE': True,
     'TRAIN.DROP_LAST': False,
+    'TRAIN.RESUME_FROM_CKPT': True,
     'TRAIN.BEGIN_EPOCH': 0,
     'TRAIN.END_EPOCH': 100,
     'TRAIN.OPTIMIZER': 'adamw',
@@ -69,6 +69,18 @@ SCENARIO_UNCERTAINTY = {
     'FD': True,
     'CS': False,
     'OS': False,
+}
+
+SCENARIO_PROTOCOL = {
+    'FD': 'bird_hke_repro_v3',
+    'CS': 'bird_hke_repro_v2',
+    'OS': 'bird_hke_repro_v2',
+}
+
+PASSIVE_UNCERTAINTY_EXPECTED = {
+    'UNCERTAINTY.RELIABILITY_GRADIENT_TO_BACKBONE': False,
+    'UNCERTAINTY.HEAD_DROPOUT': 0.0,
+    'UNCERTAINTY.QUALITY_PCK_THRESHOLD': 0.5,
 }
 
 RUN_DIRECTORY_KEYS = (
@@ -135,6 +147,18 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
     try:
         scenario = scenario_from_path(path)
         uncertainty_expected = SCENARIO_UNCERTAINTY[scenario]
+        protocol_expected = SCENARIO_PROTOCOL[scenario]
+        try:
+            protocol_actual = _get(config, 'REPRODUCIBILITY.PROTOCOL')
+        except KeyError:
+            protocol_actual = None
+            problems.append('REPRODUCIBILITY.PROTOCOL: missing')
+        if protocol_actual != protocol_expected:
+            problems.append(
+                'REPRODUCIBILITY.PROTOCOL: '
+                f'{scenario} requires {protocol_expected!r}, '
+                f'found {protocol_actual!r}'
+            )
         try:
             uncertainty_actual = _get(config, 'UNCERTAINTY.ENABLED')
         except KeyError:
@@ -147,8 +171,21 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
                 f'found {uncertainty_actual!r}'
             )
 
+        if uncertainty_expected:
+            for key, expected in PASSIVE_UNCERTAINTY_EXPECTED.items():
+                try:
+                    actual = _get(config, key)
+                except KeyError:
+                    problems.append(f'{key}: missing (expected {expected!r})')
+                    continue
+                if actual != expected:
+                    problems.append(
+                        f'{key}: expected {expected!r}, found {actual!r}'
+                    )
+
         namespace = 'uncertainty' if uncertainty_expected else 'baseline'
-        required_fragment = f'/repro_v2/{namespace}/'
+        version = 'repro_v3' if scenario == 'FD' else 'repro_v2'
+        required_fragment = f'/{version}/{namespace}/'
         for key in RUN_DIRECTORY_KEYS:
             try:
                 value = str(_get(config, key)).replace('\\', '/')
@@ -160,6 +197,17 @@ def audit_file(path: Path) -> Tuple[dict, Any, List[str]]:
                     f'{key}: {scenario} paths must contain '
                     f'{required_fragment!r}; found {value!r}'
                 )
+        try:
+            checkpoint_dir = str(_get(config, 'TRAIN.CKPT_DIR')).rstrip('/\\')
+            log_dir = str(_get(config, 'TRAIN.LOG_DIR')).rstrip('/\\')
+            if checkpoint_dir != log_dir:
+                problems.append(
+                    'TRAIN.CKPT_DIR and TRAIN.LOG_DIR must identify the same '
+                    'run directory so checkpoints, stop requests, and reports '
+                    'cannot be mixed across runs'
+                )
+        except KeyError:
+            pass
     except ValueError as exc:
         problems.append(str(exc))
 

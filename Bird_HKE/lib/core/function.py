@@ -13,6 +13,7 @@ from models.common.uncertainty import spatial_probability
 from utilities.transforms import flip_back
 from utilities.vis import save_debug_images
 from utilities.reproducibility import accumulation_group_size
+from utilities.utilities import clip_pose_and_auxiliary_gradients
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,9 @@ def _last_output(outputs):
 
 
 def _location_maps(output):
-    return output['probability_maps'] if isinstance(output, dict) else output
+    # Training accuracy and debug images must use the exact pose heatmaps used
+    # by the baseline, never the auxiliary probability representation.
+    return output['location_logits'] if isinstance(output, dict) else output
 
 
 def _compute_loss(criterion, outputs, target, target_weight, meta):
@@ -116,7 +119,7 @@ def train(config, train_loader, model, criterion, optimizer, epoch,
         if should_step:
             clip_norm = getattr(config.TRAIN, 'CLIP_GRAD_NORM', 0.0)
             if clip_norm and clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+                clip_pose_and_auxiliary_gradients(model, max_norm=clip_norm)
             optimizer.step()
             optimizer.zero_grad()
 

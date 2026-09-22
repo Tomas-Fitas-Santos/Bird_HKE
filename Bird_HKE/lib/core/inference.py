@@ -3,7 +3,6 @@ import json
 import numpy as np
 import os
 import sys
-import cv2
 from functools import lru_cache
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -289,54 +288,14 @@ def _calibrated_reliability(output, calibration):
 
 
 def get_probabilistic_preds(config, output, center, scale):
-    """Decode probabilistic maps and calibrated per-keypoint confidence."""
+    """Decode unchanged pose logits and add calibrated keypoint confidence."""
     calibration = _load_calibration(config)
-    probability_maps = _calibrated_probability_maps(config, output, calibration)
+    predictions, _ = get_final_preds(
+        config, _to_numpy(output['location_logits']), center, scale
+    )
 
-    decoder = str(config.UNCERTAINTY.DECODER).lower()
-    decoder_maps = probability_maps
-    if decoder == 'expected_bks':
-        sigma = max(
-            float(config.UNCERTAINTY.BKS_SIGMA_FRACTION)
-            * min(probability_maps.shape[2:]),
-            1e-6,
-        )
-        decoder_maps = np.empty_like(probability_maps)
-        for sample in range(probability_maps.shape[0]):
-            for joint in range(probability_maps.shape[1]):
-                decoder_maps[sample, joint] = cv2.GaussianBlur(
-                    probability_maps[sample, joint],
-                    ksize=(0, 0),
-                    sigmaX=sigma,
-                    sigmaY=sigma,
-                    borderType=cv2.BORDER_CONSTANT,
-                )
-    elif decoder != 'argmax':
-        raise ValueError(
-            f"Unknown uncertainty decoder {decoder!r}; expected 'expected_bks' or 'argmax'."
-        )
-
-    coordinates, _ = get_max_preds(decoder_maps)
-    height, width = probability_maps.shape[2:]
-    predictions = coordinates.copy()
-    for index in range(coordinates.shape[0]):
-        predictions[index] = transform_preds(
-            coordinates[index], center[index], scale[index], [width, height]
-        )
-
-    quality, visibility = _calibrated_reliability(output, calibration)
-    combination = str(config.UNCERTAINTY.SCORE_COMBINATION).lower()
-    if combination == 'quality_visibility':
-        scores = quality * visibility
-    elif combination == 'quality':
-        scores = quality
-    elif combination == 'visibility':
-        scores = visibility
-    else:
-        raise ValueError(
-            'UNCERTAINTY.SCORE_COMBINATION must be quality_visibility, quality, or visibility'
-        )
-    scores = np.clip(scores[..., None], 0.0, 1.0).astype(np.float32)
+    quality, _ = _calibrated_reliability(output, calibration)
+    scores = np.clip(quality[..., None], 0.0, 1.0).astype(np.float32)
     _update_score_stats(scores)
     return predictions, scores
 

@@ -11,12 +11,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 try:
     import torch
     from lib.config.default import _C
-    from lib.core.loss import ProbabilisticPoseLoss
+    from lib.core.inference import get_pose_output_preds
+    from lib.core.loss import AuxiliaryPoseUncertaintyLoss
+    from lib.core.loss import JointsMSELoss
     from lib.core.uncertainty import ensemble_uncertainty
     from lib.core.uncertainty import fit_hpd_mass_thresholds
     from lib.core.uncertainty import hpd_region
     from lib.core.uncertainty import probability_map_moments
     from models.common.uncertainty import ProbabilisticPoseOutput
+    from models.common.uncertainty import build_probabilistic_pose_output
     from models.common.uncertainty import spatial_probability
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError:
@@ -50,12 +53,22 @@ class UncertaintyModelTests(unittest.TestCase):
         self.assertIsNone(logits.grad)
         self.assertTrue(any(parameter.grad is not None for parameter in module.parameters()))
 
+    def test_auxiliary_head_construction_preserves_pose_rng_stream(self):
+        config = _C.clone()
+        config.defrost()
+        config.UNCERTAINTY.ENABLED = True
+        config.freeze()
+        torch.manual_seed(314159)
+        state_before = torch.get_rng_state().clone()
+        build_probabilistic_pose_output(config, in_channels=8, num_joints=4)
+        self.assertTrue(torch.equal(state_before, torch.get_rng_state()))
+
     def test_probabilistic_loss_is_finite_and_masks_unknown_visibility(self):
         config = _C.clone()
         config.defrost()
         config.UNCERTAINTY.ENABLED = True
         config.freeze()
-        criterion = ProbabilisticPoseLoss(config)
+        criterion = AuxiliaryPoseUncertaintyLoss(config)
         logits = torch.randn(2, 4, 8, 8, requires_grad=True)
         quality = torch.randn(2, 4, requires_grad=True)
         visibility = torch.randn(2, 4, requires_grad=True)
@@ -82,8 +95,66 @@ class UncertaintyModelTests(unittest.TestCase):
         self.assertIsNotNone(visibility.grad)
         self.assertEqual(
             set(criterion.last_components),
-            {'location', 'smoothness', 'quality', 'visibility'},
+            {'pose', 'quality', 'visibility'},
         )
+
+    def test_auxiliary_loss_preserves_exact_pose_gradient(self):
+        config = _C.clone()
+        config.defrost()
+        config.UNCERTAINTY.ENABLED = True
+        config.freeze()
+        baseline_criterion = JointsMSELoss(use_target_weight=True)
+        auxiliary_criterion = AuxiliaryPoseUncertaintyLoss(config)
+
+        baseline_logits = torch.randn(2, 4, 8, 8, requires_grad=True)
+        auxiliary_logits = baseline_logits.detach().clone().requires_grad_(True)
+        target = torch.zeros(2, 4, 8, 8)
+        target[:, :, 3, 5] = 1
+        target_weight = torch.ones(2, 4, 1)
+        quality = torch.randn(2, 4, requires_grad=True)
+        visibility = torch.randn(2, 4, requires_grad=True)
+        output = {
+            'location_logits': auxiliary_logits,
+            'probability_maps': torch.softmax(
+                auxiliary_logits.detach().flatten(2), dim=-1
+            ).reshape_as(auxiliary_logits),
+            'quality_logits': quality,
+            'visibility_logits': visibility,
+        }
+        meta = {
+            'visibility_known': torch.ones(2, 4, 1),
+            'visibility_target': torch.ones(2, 4, 1),
+        }
+
+        baseline_criterion(
+            baseline_logits, target, target_weight, meta
+        ).backward()
+        auxiliary_criterion(output, target, target_weight, meta).backward()
+        self.assertTrue(torch.equal(baseline_logits.grad, auxiliary_logits.grad))
+        self.assertIsNotNone(quality.grad)
+        self.assertIsNotNone(visibility.grad)
+
+    def test_uncertainty_output_preserves_exact_pose_coordinates(self):
+        config = _C.clone()
+        logits = torch.randn(2, 4, 8, 8)
+        centers = np.asarray([[64.0, 64.0], [80.0, 70.0]], dtype=np.float32)
+        scales = np.asarray([[1.0, 1.0], [1.2, 1.2]], dtype=np.float32)
+        baseline_coordinates, _ = get_pose_output_preds(
+            config, logits, centers, scales
+        )
+        output = {
+            'location_logits': logits,
+            'probability_maps': torch.softmax(
+                logits.flatten(2), dim=-1
+            ).reshape_as(logits),
+            'quality_logits': torch.zeros(2, 4),
+            'visibility_logits': torch.zeros(2, 4),
+        }
+        uncertainty_coordinates, scores = get_pose_output_preds(
+            config, output, centers, scales
+        )
+        self.assertTrue(np.array_equal(baseline_coordinates, uncertainty_coordinates))
+        self.assertEqual(scores.shape, (2, 4, 1))
 
 
 @unittest.skipUnless(

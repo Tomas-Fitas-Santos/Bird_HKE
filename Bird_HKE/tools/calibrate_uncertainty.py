@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-import cv2
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +24,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dataset import birdgaze  # noqa: E402
 from lib.config.default import _C as cfg  # noqa: E402
 from lib.config.default import update_config  # noqa: E402
+from lib.core.function import _average_pose_outputs  # noqa: E402
+from lib.core.function import _flip_back_output  # noqa: E402
 from lib.core.inference import spatial_probability_numpy  # noqa: E402
 from lib.core.uncertainty import calibration_error  # noqa: E402
 from lib.core.uncertainty import fit_binary_temperature  # noqa: E402
@@ -60,6 +61,10 @@ def _state_dict(checkpoint):
     }
 
 
+def _last_output(outputs):
+    return outputs[-1] if isinstance(outputs, list) else outputs
+
+
 def _sha256(path):
     digest = hashlib.sha256()
     with open(path, 'rb') as handle:
@@ -77,26 +82,19 @@ def _ground_truth_coordinates(target):
     )
 
 
-def _quality_targets(probability_maps, coordinates, sigma):
-    _, _, _, width = probability_maps.shape
-    decoded = np.empty_like(probability_maps)
-    for sample in range(probability_maps.shape[0]):
-        for joint in range(probability_maps.shape[1]):
-            decoded[sample, joint] = cv2.GaussianBlur(
-                probability_maps[sample, joint],
-                ksize=(0, 0),
-                sigmaX=sigma,
-                sigmaY=sigma,
-                borderType=cv2.BORDER_CONSTANT,
-            )
-    index = decoded.reshape(decoded.shape[0], decoded.shape[1], -1).argmax(axis=-1)
+def _quality_targets(location_logits, coordinates, pck_threshold):
+    """Binary correctness of the unchanged heatmap-argmax prediction."""
+    _, _, height, width = location_logits.shape
+    index = location_logits.reshape(
+        location_logits.shape[0], location_logits.shape[1], -1
+    ).argmax(axis=-1)
     predicted_x = np.remainder(index, width)
     predicted_y = np.floor_divide(index, width)
-    distance_squared = (
-        (predicted_x - coordinates[..., 0]) ** 2
-        + (predicted_y - coordinates[..., 1]) ** 2
+    normalized_distance = np.sqrt(
+        ((predicted_x - coordinates[..., 0]) / (width / 10.0)) ** 2
+        + ((predicted_y - coordinates[..., 1]) / (height / 10.0)) ** 2
     )
-    return np.exp(-distance_squared / (2 * sigma ** 2))
+    return (normalized_distance < float(pck_threshold)).astype(np.float64)
 
 
 def _spatial_nll(logits, coordinates, valid, temperature):
@@ -188,7 +186,19 @@ def main():
     }
     with torch.no_grad():
         for inputs, target, target_weight, meta in loader:
-            output = model(inputs.to(device, non_blocking=True))
+            inputs = inputs.to(device, non_blocking=True)
+            output = _last_output(model(inputs))
+            if cfg.TEST.FLIP_TEST:
+                flipped_output = _flip_back_output(
+                    _last_output(model(inputs.flip(3))),
+                    dataset.flip_pairs,
+                    device,
+                )
+                if cfg.TEST.SHIFT_HEATMAP:
+                    flipped_output['location_logits'][:, :, :, 1:] = (
+                        flipped_output['location_logits'].clone()[:, :, :, 0:-1]
+                    )
+                output = _average_pose_outputs(cfg, output, flipped_output)
             if not isinstance(output, dict):
                 raise TypeError('checkpoint/model did not return uncertainty outputs')
             collected['location_logits'].append(output['location_logits'].cpu().numpy())
@@ -200,11 +210,6 @@ def main():
             collected['visibility_target'].append(meta['visibility_target'][..., 0].numpy())
 
     arrays = {key: np.concatenate(value, axis=0) for key, value in collected.items()}
-    sigma = max(
-        float(cfg.UNCERTAINTY.BKS_SIGMA_FRACTION)
-        * min(arrays['location_logits'].shape[2:]),
-        1e-6,
-    )
     location_temperature = fit_spatial_temperature(
         arrays['location_logits'], arrays['coordinates'], arrays['coordinate_valid']
     )
@@ -214,7 +219,9 @@ def main():
         location_temperature,
     )
     quality_target = _quality_targets(
-        calibrated_probability, arrays['coordinates'], sigma
+        arrays['location_logits'],
+        arrays['coordinates'],
+        cfg.UNCERTAINTY.QUALITY_PCK_THRESHOLD,
     )
     quality_temperature = fit_binary_temperature(
         arrays['quality_logits'], quality_target, arrays['coordinate_valid']
@@ -240,12 +247,16 @@ def main():
         1 + np.exp(-arrays['visibility_logits'] / visibility_temperature)
     )
     result = {
-        'format_version': 1,
+        'format_version': 2,
         'checkpoint': checkpoint,
         'checkpoint_sha256': _sha256(checkpoint),
         'calibration_annotation': str(annotation_file.resolve()),
         'samples': int(arrays['location_logits'].shape[0]),
         'distribution': str(cfg.UNCERTAINTY.DISTRIBUTION),
+        'quality_target': 'pck_correct',
+        'quality_pck_threshold': float(
+            cfg.UNCERTAINTY.QUALITY_PCK_THRESHOLD
+        ),
         'location_temperature': location_temperature,
         'quality_temperature': quality_temperature,
         'visibility_temperature': visibility_temperature,

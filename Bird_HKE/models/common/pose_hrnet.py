@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import logging
 
-from .uncertainty import ProbabilisticPoseOutput
+from .uncertainty import build_probabilistic_pose_output
 
 
 ########################### Building Blocks #################################
@@ -337,7 +337,7 @@ class PoseHighResolutionNet(nn.Module):
         self.uncertainty_enabled = bool(cfg['UNCERTAINTY']['ENABLED'])
         self.probabilistic_output = None
         if self.uncertainty_enabled:
-            self.probabilistic_output = ProbabilisticPoseOutput(
+            self.probabilistic_output = build_probabilistic_pose_output(
                 cfg,
                 in_channels=pre_stage_channels[0],
                 num_joints=cfg['MODEL']['NUM_JOINTS'],
