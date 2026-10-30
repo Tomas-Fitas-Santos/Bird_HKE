@@ -109,6 +109,7 @@ env_python -m pip install 'torch==2.7.0+cu128' 'torchvision==0.22.0+cu128' \
 # requirements.txt pins the rest of the project and the same PyTorch wheels.
 env_python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
     -r "$repo_root/requirements.txt"
+env_python -m pip install 'packaging==25.0' 'ninja==1.11.1.4'
 
 # These releases provide matching CUDA 12 / torch 2.7 / CPython 3.10 wheels.
 # Match the PyTorch C++ ABI; selecting the wrong ABI fails at import/runtime.
@@ -118,19 +119,31 @@ abi="${abi//$'\r'/}"
 abi="${abi//$'\n'/}"
 [[ "$abi" == TRUE || "$abi" == FALSE ]] || die "Could not determine PyTorch C++ ABI: $abi"
 
+if [[ "$abi" == FALSE ]]; then
+    conv_sha=1f245d0fc9eeb83ecdad26400cf157cca357860462190bd66fde14a58229f1f0
+    mamba_sha=059f3740d811a80c1bb09ae6af0f72f0ba19a28ef641b4fa36606643cc593c7d
+else
+    conv_sha=3a60ede12aa2bcd0e0cd435956bb65a9d85260381c9d99ea4c45551e3174b894
+    mamba_sha=8e19f1dd75b67c6f65433b5a02a009ceab03166430b16c7983873b7f160c3056
+fi
+
 conv_name="causal_conv1d-1.5.3.post1+cu12torch2.7cxx11abi${abi}-cp310-cp310-linux_x86_64.whl"
 mamba_name="mamba_ssm-2.2.6.post3+cu12torch2.7cxx11abi${abi}-cp310-cp310-linux_x86_64.whl"
 if [[ -n "${BIRD_HKE_WHEEL_DIR:-}" ]]; then
     [[ -f "$BIRD_HKE_WHEEL_DIR/$conv_name" && -f "$BIRD_HKE_WHEEL_DIR/$mamba_name" ]] ||
         die "Missing matching CUDA wheels in BIRD_HKE_WHEEL_DIR=$BIRD_HKE_WHEEL_DIR"
+    printf '%s  %s\n' "$conv_sha" "$BIRD_HKE_WHEEL_DIR/$conv_name" | sha256sum --check --status ||
+        die 'The local causal-conv1d wheel has an unexpected SHA-256.'
+    printf '%s  %s\n' "$mamba_sha" "$BIRD_HKE_WHEEL_DIR/$mamba_name" | sha256sum --check --status ||
+        die 'The local mamba-ssm wheel has an unexpected SHA-256.'
     conv_source="$BIRD_HKE_WHEEL_DIR/$conv_name"
     mamba_source="$BIRD_HKE_WHEEL_DIR/$mamba_name"
 else
-    conv_source="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.3.post1/${conv_name/+/%2B}"
-    mamba_source="https://github.com/state-spaces/mamba/releases/download/v2.2.6.post3/${mamba_name/+/%2B}"
+    conv_source="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.3.post1/${conv_name/+/%2B}#sha256=$conv_sha"
+    mamba_source="https://github.com/state-spaces/mamba/releases/download/v2.2.6.post3/${mamba_name/+/%2B}#sha256=$mamba_sha"
 fi
 
-env_python -m pip install "$conv_source" "$mamba_source"
+env_python -m pip install --no-deps "$conv_source" "$mamba_source"
 verify_packages
 
 # Keep a package inventory outside the Git working tree for reporting.
