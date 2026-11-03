@@ -8,6 +8,10 @@ BASE="/home/students/conda-envs/bird_hke-cu128/bin/python"
 VENV="/home/students/conda-envs/rtmpose-torch27-venv"
 MMPOSE="$ROOT/.external_pose_sources/rtmpose"
 MMCV="$ROOT/.external_pose_sources/mmcv-2.2.0"
+OVERLAY="$ROOT/.external_pose_sources/rtmpose_birdgaze_overlay"
+# PYTHONPATH puts the RTMPose-only Python package before the upstream
+# checkout. No MMDetection package or monkeypatched version numbers.
+export PYTHONPATH="$OVERLAY:$ROOT:$MMPOSE${PYTHONPATH:+:$PYTHONPATH}"
 PIN="759b39c13fea6ba094afc1fa932f51dc1b11cbf9"
 export CUDA_HOME=/usr/local/cuda-12.8
 export PATH="$CUDA_HOME/bin:$PATH"
@@ -59,6 +63,13 @@ import mmpose
 from mmcv.ops import nms
 from mmpose.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
+from pathlib import Path
+expected = (Path.cwd() / ".external_pose_sources" /
+            "rtmpose_birdgaze_overlay" / "mmpose").resolve()
+if Path(mmpose.__file__).resolve().parent != expected:
+    raise RuntimeError(
+        f"MMPose import location incorrect: {mmpose.__file__}; expected {expected}")
+print("Using pinned RTMPose-only MMPose overlay:", mmpose.__file__)
 assert sys.prefix != sys.base_prefix
 print("NumPy:", np.__version__, "from:", np.__file__)
 assert np.__version__ == "1.26.4", (
@@ -98,6 +109,10 @@ assert torch.__version__ == "2.7.0+cu128"
 PY
   echo "Checking package dependency metadata (report only):"
   "$VENV/bin/python" -m pip check || true
+  # MMPose imports its unrelated RTMOHead unconditionally, pulling in
+  # incompatible MMDetection. Copy and patch only those imports in an
+  # ignored local overlay, without changing pinned upstream files.
+  "$VENV/bin/python" "$ROOT/external_models/rtmpose/make_overlay.py"
   verify
 }
 build() {
@@ -141,6 +156,7 @@ PY
   echo "Building full MMCV CUDA extension locally for exact PyTorch 2.7.0+cu128."
   "$VENV/bin/python" -m pip install --no-deps --no-build-isolation -v "$MMCV"
   "$VENV/bin/python" -m pip install --no-deps --no-build-isolation -e "$MMPOSE"
+  "$VENV/bin/python" "$ROOT/external_models/rtmpose/make_overlay.py"
   verify
 }
 case "${1:---inspect}" in
