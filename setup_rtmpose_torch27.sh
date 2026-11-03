@@ -4,6 +4,7 @@
 # Never installs into the original Bird_HKE conda environment.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export BIRD_HKE_REPO_ROOT="$ROOT"
 BASE="/home/students/conda-envs/bird_hke-cu128/bin/python"
 VENV="/home/students/conda-envs/rtmpose-torch27-venv"
 MMPOSE="$ROOT/.external_pose_sources/rtmpose"
@@ -64,7 +65,7 @@ from mmcv.ops import nms
 from mmpose.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
 from pathlib import Path
-expected = (Path.cwd() / ".external_pose_sources" /
+expected = (Path(__import__("os").environ["BIRD_HKE_REPO_ROOT"]) / ".external_pose_sources" /
             "rtmpose_birdgaze_overlay" / "mmpose").resolve()
 if Path(mmpose.__file__).resolve().parent != expected:
     raise RuntimeError(
