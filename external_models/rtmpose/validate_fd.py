@@ -40,7 +40,7 @@ def build_cfg(root):
     from mmpose.registry import METRICS
     for name in ("val_evaluator", "test_evaluator"):
         metric_cfg = cfg[name]
-        unexpected = set(metric_cfg) - {"type", "norm_item", "thr", "prefix"}
+        unexpected = set(metric_cfg) - {"type", "norm_item", "thr", "prefix", "_scope_"}
         if unexpected:
             raise RuntimeError(
                 f"{name} has unexpected inherited fields: {sorted(unexpected)}")
