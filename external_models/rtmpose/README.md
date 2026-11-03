@@ -235,6 +235,48 @@ Before relaunching, check that `$WORK` no longer exists and that no
 previous training process remains active. The original run evidence is
 preserved, and the next launch will write a fresh recipe manifest.
 
+**Deterministic cuBLAS correction (2026-11-03):** The second
+definitive launch constructed the validation evaluator successfully,
+then stopped during the *first training iteration* because PyTorch
+enforces deterministic algorithms but cuBLAS did not have a workspace
+configured. The model and dataset are not implicated. The RTMPose
+launcher now sets `CUBLAS_WORKSPACE_CONFIG=:4096:8` in the environment
+of **both** the GPU preflight and the training child process, before
+CUDA initialization. `--check-only` now enables the same deterministic
+PyTorch/CuDNN settings as the real training hook and runs an actual
+CUDA matmul, in addition to the real FD train step and PCK evaluation.
+Do not disable deterministic algorithms or change the model recipe.
+
+The model/config/data hashes were *not* changed by this cuBLAS fix.
+If the latest failed run left a matching
+`birdgaze_training_recipe.json`, **and no checkpoints or training
+process are present**, the existing `--retry-start` mode is the correct
+way to restart from initialization without deleting the failed run.
+It refuses a missing/mismatched manifest or any checkpoint. Preserve
+`external_models/generated/rtmpose_fd_training.log` as a separate
+failure log before starting another attempt:
+
+```bash
+cd /mnt/storage/TomasSantos/Bird_HKE
+git pull --ff-only origin phase-3-passive-uncertainty
+RTMP_PY=/home/students/conda-envs/rtmpose-torch27-venv/bin/python
+$RTMP_PY -m external_models.rtmpose.run_birdgaze --scenario FD --check-only \
+  > external_models/generated/rtmpose_fd_preflight.log 2>&1
+tail -n 35 external_models/generated/rtmpose_fd_preflight.log
+
+WORK="Bird_HKE/trained_models/External_Baselines/RTMPose_M/FD/seed_2026"
+ls -la "$WORK"
+find "$WORK" -type f -name '*.pth' -print
+test ! -e "$WORK/last_checkpoint"
+cp -n external_models/generated/rtmpose_fd_training.log \
+  external_models/generated/rtmpose_fd_training_cublas_failure_20261103.log
+```
+
+Only if the preflight passes and no checkpoints or live training
+process exist, restart with `--retry-start` and monitor the first epoch.
+Do **not** launch another plain run in the already-used directory;
+do **not** use `--resume` without a saved checkpoint.
+
 ## 4. Definitive FD training (only after preflight PASS)
 
 ```bash
