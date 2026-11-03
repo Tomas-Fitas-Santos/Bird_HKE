@@ -1,5 +1,13 @@
 # External BirdGaze pose-estimation baselines
 
+**Current Phase-3 status:** RTMPose-M is the first FD model to be implemented.
+Its dedicated [FD setup, test, train and resume guide](rtmpose/README.md)
+supersedes the earlier RTMPose *initial adapter* notes below. The code is
+committed, but it has **not yet been run on Titan in the isolated MMPose
+environment**. Run the real FD data/GPU preflight before definitive training.
+ViTPose++-B and PoseBH-B remain the next architectures to integrate.
+
+
 Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose++-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
 
 ## Upstream source acquisition
