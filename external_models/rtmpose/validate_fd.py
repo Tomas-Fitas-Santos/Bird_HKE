@@ -137,8 +137,30 @@ def check_gpu(cfg, collected):
     from mmengine.dataset import pseudo_collate
     from mmpose.registry import MODELS
 
+    # Match BirdGazeRNGCheckpointHook.before_run in the real MMEngine runner.
+    # This was not previously exercised by the disposable GPU preflight.
+    # Check before CUDA allocations to report a clear error.
+    workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if workspace not in (":4096:8", ":16:8"):
+        raise RuntimeError(
+            "Deterministic cuBLAS workspace missing: set "
+            "CUBLAS_WORKSPACE_CONFIG=:4096:8 before starting Python")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=False)
     if not torch.cuda.is_available():
         raise RuntimeError("GPU unavailable")
+    # Force an actual cuBLAS GEMM under deterministic settings before
+    # expensive model initialization and BirdGaze data operations.
+    a = torch.ones((4, 4), device="cuda")
+    b = a @ a
+    if not torch.isfinite(b).all():
+        raise RuntimeError("Nonfinite deterministic cuBLAS output")
+    torch.cuda.synchronize()
+    print(f"Deterministic cuBLAS CUDA matmul: PASS "
+          f"CUBLAS_WORKSPACE_CONFIG={workspace}", flush=True)
     if torch.cuda.get_device_capability()[0] >= 10:
         raise RuntimeError("This RTMPose-M single RTX 3090 configuration is not tested on Blackwell")
     print("GPU:", torch.cuda.get_device_name(0), flush=True)
