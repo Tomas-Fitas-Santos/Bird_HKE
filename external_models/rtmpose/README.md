@@ -1,20 +1,19 @@
 # RTMPose-M BirdGaze FD — Phase 3
 
-> **Titan setup note (2026-11-03).** The original isolated PyTorch 2.1
-> Conda route was paused because the solver requests **2.75 GB** of downloads
-> and the earlier 2.2 GB PyTorch pip wheel failed its hash check.
-> **Do not run the heavy `setup_rtmpose_env.sh` on Titan again yet.**
-> The RTMPose-M config now uses the equivalent **MMPose-native CSPNeXt**
-> backbone and no longer requires MMDetection. We are evaluating a
-> lighter isolated environment that reuses the existing PyTorch
-> **2.7.0+cu128**, but compatibility of the compiled MMCV build with
-> exactly PyTorch 2.7.0 has **not yet been proven**. A public third-party
-> prebuilt MMCV 2.2.0 CUDA 12.8 wheel is documented for PyTorch
-> **2.7.1**, not the installed 2.7.0. Do not silently assume their
-> binary compatibility. Check the local CUDA compiler and available
-> matching wheels before installing; the native Bird_HKE environment
-> must not be modified.
-
+> **Titan installation route (2026-11-03).** Titan has RTX 3090 (SM 8.6),
+> an existing working PyTorch 2.7.0+cu128 environment, and matching
+> `/usr/local/cuda-12.8/bin/nvcc`. The old PyTorch 2.1 installation
+> failed while downloading a 2.2 GB wheel. The Conda alternative proposed
+> 2.75 GB. **Do not run `setup_rtmpose_env.sh` on Titan.**
+>
+> The new [`setup_rtmpose_torch27.sh`](../../setup_rtmpose_torch27.sh)
+> prepares a **separate, system-site-packages virtualenv** using the already
+> installed Torch/CUDA, and compiles MMCV 2.2.0 CUDA ops for SM 8.6.
+> It installs no packages into the existing `bird_hke-cu128` environment.
+> Compatibility of MMCV 2.2.0's C++ source with torch 2.7.0 is **not yet
+> validated**. Start with the read-only `--inspect` mode. The `--build`
+> mode may use considerable CPU/RAM, but avoids re-downloading PyTorch/CUDA.
+> Keep the build log for troubleshooting.
 
 This is the **first** of the three external architectures to be integrated.
 The implementation is committed to the existing `phase-3-passive-uncertainty`
@@ -73,43 +72,46 @@ records present in the Titan dataset, including 2,447/322 negative-scale rows
 and 33/0 zero-scale rows (train/val). A different dataset version may have
 different counts; the runtime verifies equality with the source JSON.
 
-## 2. Isolated RTMPose environment
+## 2. Isolated RTMPose environment using existing CUDA 12.8
 
-First inspect the GPU compute architecture:
-
-```bash
-nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
-```
-
-The provided pinned prebuilt wheel recipe targets **Ampere/Hopper**
-(compute capabilities below 10), not Blackwell. A Blackwell GPU needs a
-newer CUDA/PyTorch/MMCV compatibility solution. Do not touch the existing
-`/home/students/conda-envs/bird_hke-cu128` environment.
+Check prerequisites without installing anything:
 
 ```bash
-bash setup_rtmpose_env.sh > external_models/generated/setup_rtmpose.log 2>&1
-echo "Environment setup exit code: $?"
-tail -n 55 external_models/generated/setup_rtmpose.log
-
-bash setup_rtmpose_env.sh --verify
+bash setup_rtmpose_torch27.sh --inspect
 ```
 
-The isolated environment is at
-`/home/students/conda-envs/rtmpose-cu121`.
-The compatible stack is Python 3.10, PyTorch 2.1.0 with the CUDA 12.1
-runtime (installed from the official `pytorch` and `nvidia` Conda channels),
-MMCV 2.1.0 (full CUDA-ops wheel), MMEngine 0.10.7, MMDetection 3.2.0,
-and the pinned MMPose source. No CUDA compiler installation is required for
-the known MMCV wheel. A large PyTorch 2.1.0+cu121 pip-wheel download
-previously failed with a SHA-256 mismatch on Titan; the setup now uses
-the official **split Conda packages** to avoid retrying that wheel.
-The script can safely be rerun in the already-created RTMPose environment.
-Never bypass package hash verification.
+The inspection prints the existing torch/CUDA versions, GPU architecture,
+CUDA compiler, GCC/G++, and available disk space. Do not proceed to a build
+unless they are as expected.
+
+When the checks pass, build MMCV's full CUDA operators locally in a separate
+virtualenv, limiting parallel compiler jobs:
+
+```bash
+mkdir -p external_models/generated
+MAX_JOBS=2 bash setup_rtmpose_torch27.sh --build \
+  > external_models/generated/rtmpose_torch27_build.log 2>&1
+echo "Build exit code: $?"
+tail -n 70 external_models/generated/rtmpose_torch27_build.log
+```
+
+If it succeeds:
+
+```bash
+bash setup_rtmpose_torch27.sh --verify
+```
+
+The virtualenv is `/home/students/conda-envs/rtmpose-torch27-venv`.
+It inherits the existing Torch 2.7.0+cu128 binary package without modifying
+it, but installs MMCV, MMEngine and MMPose into the virtualenv. No large
+PyTorch/CUDA binary downloads are requested. This older MMCV source may need
+compatibility fixes against PyTorch 2.7; review any compiler error before
+trying another dependency stack.
 
 ## 3. Mandatory disposable real-data/GPU check
 
 ```bash
-RTMP_PY=/home/students/conda-envs/rtmpose-cu121/bin/python
+RTMP_PY=/home/students/conda-envs/rtmpose-torch27-venv/bin/python
 
 $RTMP_PY -m external_models.rtmpose.run_birdgaze --scenario FD --check-only \
   > external_models/generated/rtmpose_fd_preflight.log 2>&1
@@ -151,9 +153,9 @@ present. Existing native Bird_HKE checkpoints are never modified.
 
 ## Readiness and outstanding work
 
-The code and isolated setup are committed, and the compatible MMCV wheel is
-publicly available, but **this RTMPose integration has not yet passed
-MMPose data/GPU tests on Titan**. Please run the preflight and share the
+The code and isolated overlay setup are committed, but the
+MMCV 2.2.0 source build and **MMPose data/GPU tests have not yet passed
+on Titan**. Please run the preflight and share the
 log or first error. Do not launch definitive training based only on
 Python syntax or unit fixture tests.
 
