@@ -4,7 +4,7 @@
 This launcher does not change Git branches or touch native Bird_HKE runs.
 It checks the exact BirdGaze training recipe before creating a work directory,
 runs a disposable GPU preflight, and resumes only from an existing compatible
-epoch checkpoint. Use the isolated RTMPose conda interpreter.
+epoch checkpoint. Use the isolated RTMPose overlay interpreter.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def runtime_versions() -> dict:
     except metadata.PackageNotFoundError as exc:
         raise RuntimeError(
             "RTMPose dependencies are missing; activate the isolated "
-            "environment created with bash setup_rtmpose_env.sh") from exc
+            "environment created with bash setup_rtmpose_torch27.sh --build") from exc
 
 
 def recipe(scenario: str, root: Path, config: Path, dataset: Path) -> dict:
