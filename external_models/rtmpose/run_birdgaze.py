@@ -39,6 +39,11 @@ def require_pinned_upstream(root: Path) -> Path:
     if actual != PINNED_MMPOSE_REVISION:
         raise RuntimeError(
             f"Wrong MMPose source revision: {actual}, expected {PINNED_MMPOSE_REVISION}")
+    overlay = root / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
+    if not (overlay / "manifest.json").is_file():
+        raise RuntimeError(
+            "RTMPose-only MMPose import overlay missing; run "
+            "bash setup_rtmpose_torch27.sh --repair")
     return upstream
 
 
@@ -67,6 +72,18 @@ def recipe(scenario: str, root: Path, config: Path, dataset: Path) -> dict:
         "model_adapter": root / "external_models" / "rtmpose" / "model.py",
         "accumulation_plan": root / "external_models" / "rtmpose" / "accumulation.py",
         "optimizer_protocol": root / "external_models" / "rtmpose" / "protocol.py",
+        "mmpose_overlay_builder": root / "external_models" / "rtmpose" / "make_overlay.py",
+        "mmpose_overlay_manifest": (
+            root / ".external_pose_sources" / "rtmpose_birdgaze_overlay" / "manifest.json"
+        ),
+        "mmpose_overlay_hybrid_init": (
+            root / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
+            / "mmpose/models/heads/hybrid_heads/__init__.py"
+        ),
+        "mmpose_overlay_heads_init": (
+            root / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
+            / "mmpose/models/heads/__init__.py"
+        ),
         "upstream_rtmpose_m": (
             root / ".external_pose_sources" / "rtmpose" / "projects" / "rtmpose"
             / "rtmpose" / "animal_2d_keypoint"
@@ -137,8 +154,12 @@ def main() -> None:
     env = dict(os.environ)
     env["BIRDGAZE_SCENARIO"] = args.scenario
     env["BIRD_HKE_REPO_ROOT"] = str(ROOT)
+    # The pinned upstream checkout imports an unrelated RTMOHead that depends
+    # on incompatible MMDetection. The local overlay changes *only* the
+    # RTMOHead import/registration, never the RTMPose-M architecture.
+    overlay = ROOT / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
     env["PYTHONPATH"] = os.pathsep.join(
-        (str(ROOT), str(upstream), env.get("PYTHONPATH", "")))
+        (str(overlay), str(ROOT), str(upstream), env.get("PYTHONPATH", "")))
     print("RTMPose-M FD recipe SHA256:",
           hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest(),
           flush=True)
