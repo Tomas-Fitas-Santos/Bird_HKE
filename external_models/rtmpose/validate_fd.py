@@ -38,6 +38,19 @@ def build_cfg(root):
     return cfg
 
 
+def find_sample_with_flag(dataset, flag: str):
+    """Use MMEngine's public dataset API; data_list is empty when serialized.
+
+    BaseDataset defaults to serialize_data=True, calls _serialize_data()
+    during full_init(), and clears data_list. get_data_info() restores the
+    selected entry from data_bytes and also supports unserialized datasets.
+    """
+    for index in range(len(dataset)):
+        if bool(dataset.get_data_info(index).get(flag, False)):
+            return index
+    return None
+
+
 def check_data(cfg, root):
     import torch
     from mmpose.registry import DATASETS
@@ -56,15 +69,34 @@ def check_data(cfg, root):
         indices = [0]
         # FD train contains negative and zero scales; FD validation contains
         # negative scales too. Exercise each unusual affine case directly.
+        # Check both the converted COCO flags and their survival through
+        # serialized MMPose dataset loading (without turning serialization off).
         flags = ("birdgaze_negative_scale", "birdgaze_zero_scale") if split == "train" else ("birdgaze_negative_scale",)
+        expected_counts = {}
         for flag in flags:
-            match = next((i for i, row in enumerate(ds.data_list) if row.get(flag)), None)
+            expected_count = sum(bool(a.get(flag, False)) for a in expected["annotations"])
+            if expected_count == 0:
+                raise RuntimeError(
+                    f"FD {split} export has no {flag}; check converter/source data")
+            match = find_sample_with_flag(ds, flag)
             if match is None:
-                raise RuntimeError(f"No FD {split} record with {flag}")
+                raise RuntimeError(
+                    f"FD {split} COCO export contains {expected_count} {flag} "
+                    f"annotations, but MMPose serialized dataset exposes none")
+            record = ds.get_data_info(match)
+            if not record.get("raw_ann_info", {}).get(flag, False):
+                raise RuntimeError(
+                    f"FD {split} index {match} lost {flag} in raw annotation")
+            expected_counts[flag] = expected_count
             indices.append(match)
         samples = []
         for i in indices:
             packed = ds[i]
+            raw = ds.get_data_info(i)
+            for flag in flags:
+                if bool(packed["data_samples"].metainfo.get(flag, False)) != bool(raw.get(flag, False)):
+                    raise RuntimeError(
+                        f"FD {split} index {i}: {flag} lost during pipeline packing")
             if tuple(packed["inputs"].shape) != (3, 256, 256):
                 raise RuntimeError(f"Incorrect image dimensions at {split} index {i}")
             annotation = packed["data_samples"].gt_instances.keypoints
@@ -80,7 +112,7 @@ def check_data(cfg, root):
         collected[split] = (ds, samples)
         print(
             f"{split}: loaded={len(ds):,}, expected={len(expected['images']):,}, "
-            f"sample indices={indices}", flush=True
+            f"sample indices={indices}, export flags={expected_counts}", flush=True
         )
     return collected
 
