@@ -35,6 +35,21 @@ def build_cfg(root):
         raise RuntimeError("Unexpected microbatch size")
     if cfg.train_cfg.max_epochs != 100:
         raise RuntimeError("Expected a 100-epoch run")
+    # The actual Runner constructs val_evaluator before epoch 1. Guard that
+    # train-only setup here so inherited AP-10K ann_file keys cannot survive.
+    from mmpose.registry import METRICS
+    for name in ("val_evaluator", "test_evaluator"):
+        metric_cfg = cfg[name]
+        unexpected = set(metric_cfg) - {"type", "norm_item", "thr", "prefix"}
+        if unexpected:
+            raise RuntimeError(
+                f"{name} has unexpected inherited fields: {sorted(unexpected)}")
+        metric = METRICS.build(metric_cfg)
+        if metric.__class__.__name__ != "PCKAccuracy":
+            raise RuntimeError(f"Unexpected {name}: {metric.__class__.__name__}")
+    if cfg.default_hooks.checkpoint.save_best != "birdgaze/PCK":
+        raise RuntimeError("Checkpoint selector does not match val metric")
+    print("Validation/test PCKAccuracy evaluators: PASS", flush=True)
     return cfg
 
 
@@ -171,6 +186,19 @@ def check_gpu(cfg, collected):
     if not outputs[1].metainfo.get("birdgaze_negative_scale", False):
         raise RuntimeError("Negative-scale validation orientation metadata was lost")
     print("Image validation inference and signed-scale decoding: PASS", flush=True)
+
+    # Exercise the SAME metric object and PCK key used by Runner's
+    # CheckpointHook, with genuine BirdGaze images and network predictions.
+    import math
+    from mmpose.registry import METRICS
+    evaluator = METRICS.build(cfg.val_evaluator)
+    evaluator.process([], [sample.to_dict() for sample in outputs])
+    scores = evaluator.evaluate(len(outputs))
+    value = scores.get("birdgaze/PCK")
+    if value is None or not math.isfinite(float(value)):
+        raise RuntimeError(f"Missing or nonfinite checkpoint PCK: {scores}")
+    print(f"Real FD validation PCK evaluator: PASS birdgaze/PCK={value}",
+          flush=True)
 
 
 def main():
