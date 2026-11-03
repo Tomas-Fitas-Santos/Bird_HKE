@@ -22,6 +22,7 @@ try:
     from lib.utilities.reproducibility import resume_environment
     from lib.utilities.reproducibility import seed_everything
     from lib.utilities.reproducibility import training_protocol
+    from lib.utilities.reproducibility import validate_resume_protocol
     from lib.utilities.utilities import atomic_torch_save
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError:
@@ -142,6 +143,22 @@ class RuntimeReproducibilityTests(unittest.TestCase):
             protocol_hash(training_protocol(first, plan)),
             protocol_hash(training_protocol(second, plan)),
         )
+
+    def test_resume_requires_identical_training_protocol(self):
+        validate_resume_protocol(
+            {'training_protocol_hash': 'same', 'resume_environment': {
+                'git_revision': 'old-revision', 'python': 'old-runtime'}},
+            'same', strict=True,
+        )
+        with self.assertRaisesRegex(RuntimeError, 'does not match'):
+            validate_resume_protocol(
+                {'training_protocol_hash': 'other'}, 'same', strict=True
+            )
+        with self.assertRaisesRegex(RuntimeError, 'predates'):
+            validate_resume_protocol({}, 'same', strict=True)
+
+    def test_legacy_non_strict_resume_skips_protocol_requirement(self):
+        validate_resume_protocol({}, 'same', strict=False)
 
     def test_resume_environment_ignores_report_timestamps(self):
         first = {
