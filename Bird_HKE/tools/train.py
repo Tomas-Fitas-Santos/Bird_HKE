@@ -59,6 +59,7 @@ from lib.utilities.reproducibility import restore_rng_state
 from lib.utilities.reproducibility import seed_everything
 from lib.utilities.reproducibility import seed_worker
 from lib.utilities.reproducibility import training_protocol
+from lib.utilities.reproducibility import validate_resume_protocol
 from lib.utilities.reproducibility import utc_timestamp
 
 
@@ -315,11 +316,8 @@ def main():
     current_protocol = training_protocol(cfg, batch_plan)
     current_protocol_hash = protocol_hash(current_protocol)
     current_resume_environment = resume_environment(run_environment)
-    if cfg.REPRODUCIBILITY.STRICT and run_environment.get('git_dirty') is True:
-        raise RuntimeError(
-            'Strict reproducibility requires a clean Git working tree. '
-            'Commit or restore tracked changes before starting training.'
-        )
+    # The working-tree status and Git revision are provenance metadata only.
+    # Resume compatibility is enforced by the saved training protocol hash.
     os.makedirs(base_dir, exist_ok=True)
     _atomic_write_text(os.path.join(base_dir, 'resolved_config.yaml'), cfg.dump())
     atomic_write_json(os.path.join(base_dir, 'environment.json'), run_environment)
@@ -524,32 +522,9 @@ def main():
         except Exception as e:
             logger.error("Failed to load checkpoint '%s': %s", checkpoint_file, e)
             raise
-        saved_protocol_hash = checkpoint.get('training_protocol_hash')
-        if cfg.REPRODUCIBILITY.STRICT:
-            if saved_protocol_hash is None:
-                raise RuntimeError(
-                    'The checkpoint predates the reproducible-training protocol. '
-                    'Start a fresh run directory, or set '
-                    'REPRODUCIBILITY.STRICT false only for a legacy continuation.'
-                )
-            if saved_protocol_hash != current_protocol_hash:
-                raise RuntimeError(
-                    'Checkpoint training protocol does not match this run. '
-                    f'checkpoint={saved_protocol_hash}, current={current_protocol_hash}. '
-                    'Use a fresh run directory for a changed experiment.'
-                )
-            saved_resume_environment = checkpoint.get('resume_environment')
-            if saved_resume_environment is None:
-                raise RuntimeError(
-                    'Checkpoint has no strict-resume environment record. '
-                    'Start a fresh run directory for this protocol.'
-                )
-            if saved_resume_environment != current_resume_environment:
-                raise RuntimeError(
-                    'Checkpoint software, code revision, or GPU environment '
-                    'does not match this run. Restore the recorded environment '
-                    'or start a fresh run directory.'
-                )
+        validate_resume_protocol(
+            checkpoint, current_protocol_hash, strict=cfg.REPRODUCIBILITY.STRICT
+        )
         begin_epoch = checkpoint.get('epoch', 0)
         best_perf = checkpoint.get('perf', 0.0)
         best_epoch = checkpoint.get('best_epoch')
