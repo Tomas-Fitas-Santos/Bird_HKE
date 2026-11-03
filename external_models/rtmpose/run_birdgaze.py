@@ -26,7 +26,6 @@ def recipe(scenario: str, root: Path, config: Path, dataset: Path) -> dict:
         "train_coco": converted / "train_coco.json",
         "val_coco": converted / "val_coco.json",
         "dataset_adapter": root / "external_models" / "rtmpose" / "dataset.py",
-        "training_launcher": Path(__file__).resolve(),
     }
     return {
         "scenario": scenario,
