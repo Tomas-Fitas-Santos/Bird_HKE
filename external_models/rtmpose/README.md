@@ -101,6 +101,21 @@ If it succeeds:
 bash setup_rtmpose_torch27.sh --verify
 ```
 
+If the compile/install succeeds but verification fails with
+`ModuleNotFoundError: No module named 'importlib_metadata'`, **do not
+repeat the MMCV build**. The 2026-11-03 first Titan attempt reached this
+condition. Pull the latest Phase 3 branch and run:
+
+```bash
+bash setup_rtmpose_torch27.sh --repair
+```
+
+This installs only two small Python dependencies (`importlib-metadata`
+and `zipp`) in the RTMPose virtualenv and rechecks the actual CUDA NMS
+operation. If it reports `MMCV installed without compiled mmcv._ext
+extension`, examine the original MMCV build log: the wheel build alone
+does not prove GPU kernels were compiled.
+
 The virtualenv is `/home/students/conda-envs/rtmpose-torch27-venv`.
 It inherits the existing Torch 2.7.0+cu128 binary package without modifying
 it, but installs MMCV, MMEngine and MMPose into the virtualenv. No large
