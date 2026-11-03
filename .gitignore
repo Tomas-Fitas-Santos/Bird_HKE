@@ -33,3 +33,5 @@ Bird_HKE/*.pth
 .idea/
 .DS_Store
 Thumbs.db
+# Pinned external source checkouts (managed by setup_external_pose_sources.sh)
+/.external_pose_sources/
