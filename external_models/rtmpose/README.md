@@ -110,11 +110,19 @@ condition. Pull the latest Phase 3 branch and run:
 bash setup_rtmpose_torch27.sh --repair
 ```
 
-This installs only two small Python dependencies (`importlib-metadata`
-and `zipp`) in the RTMPose virtualenv and rechecks the actual CUDA NMS
-operation. If it reports `MMCV installed without compiled mmcv._ext
-extension`, examine the original MMCV build log: the wheel build alone
-does not prove GPU kernels were compiled.
+This now installs YAPF's small Python dependencies
+(`importlib-metadata`, `zipp`, `platformdirs` and `tomli`) in the
+RTMPose virtualenv and verifies the actual CUDA NMS operation. The first
+repair attempt encountered another missing YAPF dependency, `platformdirs`,
+because the original setup used `--no-deps`.
+
+**Important:** The initial MMCV wheel was only 5.4 MB; this raises the
+possibility that the build did not include a compiled `mmcv._ext` binary.
+The repair script now checks for that extension *before* importing MMCV.
+If it reports `MMCV 2.2.0 is installed WITHOUT mmcv._ext`, inspect
+`external_models/generated/rtmpose_torch27_build.log` for actual
+`mmcv._ext` compilation. Do not repeat the long build until the cause
+is established.
 
 The virtualenv is `/home/students/conda-envs/rtmpose-torch27-venv`.
 It inherits the existing Torch 2.7.0+cu128 binary package without modifying
