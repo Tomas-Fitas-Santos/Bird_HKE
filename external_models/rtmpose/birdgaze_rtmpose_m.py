@@ -76,6 +76,7 @@ train_pipeline = [
     dict(type="RandomFlip", direction="horizontal", prob=0.5),
     dict(type="RandomBBoxTransform", shift_factor=0.0, shift_prob=0.0,
          scale_factor=(0.75, 1.25), rotate_factor=30, rotate_prob=0.6),
+    dict(type="BirdGazeRestoreSignedScale"),
     dict(type="TopdownAffine", input_size=(256, 256)),
     dict(type="GenerateTarget", encoder=dict(
         type="SimCCLabel", input_size=(256, 256), sigma=(5.66, 5.66),
@@ -85,6 +86,7 @@ train_pipeline = [
 val_pipeline = [
     dict(type="LoadImage"),
     dict(type="GetBBoxCenterScale", padding=1.25),
+    dict(type="BirdGazeRestoreSignedScale"),
     dict(type="TopdownAffine", input_size=(256, 256)),
     dict(type="PackPoseInputs"),
 ]
