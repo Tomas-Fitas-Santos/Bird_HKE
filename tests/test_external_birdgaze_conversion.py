@@ -28,6 +28,20 @@ class TestBirdGazeCocoConversion(unittest.TestCase):
             self.assertEqual(ann["num_keypoints"], 0)
             self.assertEqual(ann["keypoints"], [0.0, 0.0, 0] * 4)
 
+    def test_negative_scale_is_kept_as_rotation_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            images = Path(folder)
+            (images / "negative.png").write_bytes(b"fixture")
+            sample = {
+                "image": "negative.png", "center": [20, 20], "scale": -0.09375,
+                "joints": [[10, 15], [17, 20], [22, 20], [29, 25]],
+            }
+            image, ann = convert_record(sample, 1, images, (40, 40))
+            self.assertEqual(image["id"], 1)
+            self.assertTrue(ann["birdgaze_negative_scale"])
+            self.assertEqual(ann["bbox"][2:], [18.75, 18.75])
+            self.assertGreater(ann["area"], 0)
+
     def test_preserves_keypoint_order_visibility_and_unclipped_crop(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
