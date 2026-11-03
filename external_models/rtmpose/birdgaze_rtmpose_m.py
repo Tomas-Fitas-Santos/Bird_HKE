@@ -3,6 +3,7 @@
 Run from the Bird_HKE repository root using the pinned upstream MMPose checkout.
 Set BIRDGAZE_SCENARIO=FD, OS or CS before launching. Separate environment needed.
 """
+import json
 import os
 from pathlib import Path
 
@@ -12,7 +13,8 @@ _base_ = [
 ]
 custom_imports = dict(
     imports=["external_models.rtmpose.dataset",
-             "external_models.rtmpose.model"],
+             "external_models.rtmpose.model",
+             "external_models.rtmpose.protocol"],
     allow_failed_imports=False,
 )
 
@@ -30,6 +32,9 @@ converted_root = (repo_root / "external_models" / "generated" / scenario).resolv
 assert (dataset_root / "annot" / "train.json").is_file(), f"Missing BirdGaze dataset at {dataset_root}"
 assert (converted_root / "train_coco.json").is_file(), "Run convert_birdgaze_to_coco.py first"
 assert (converted_root / "val_coco.json").is_file(), "Run convert_birdgaze_to_coco.py first"
+with (converted_root / "train_coco.json").open(encoding="utf-8") as source:
+    train_image_count = len(json.load(source)["images"])
+assert train_image_count > 0, "Empty training annotation export"
 
 # Same keypoint order as existing Bird_HKE: crown, left eye, right eye, beak.
 metainfo = dict(
@@ -59,9 +64,13 @@ resume = False
 max_epochs = 100
 train_cfg = dict(max_epochs=100, val_interval=1)
 randomness = dict(seed=2026, deterministic=True)
+env_cfg = dict(cudnn_benchmark=False)
 train_batch_size = 8
 val_batch_size = 8
 optim_wrapper = dict(
+    type="BirdGazeEpochOptimWrapper",
+    images_per_epoch=train_image_count,
+    microbatch_size=8,
     accumulative_counts=8,
     optimizer=dict(type="AdamW", lr=5e-4, weight_decay=0.01),
     paramwise_cfg=None,
@@ -75,7 +84,7 @@ auto_scale_lr = dict(enable=False, base_batch_size=64)
 
 # No second-stage pipeline switch or EMA, matching the single-stage Bird_HKE
 # protocol. Disable half-body and color augmentation used in RTMPose defaults.
-custom_hooks = []
+custom_hooks = [dict(type="BirdGazeRNGCheckpointHook")]
 
 # Preserve orientation metadata for correct validation-time decoding.
 # Validation uses images only to select checkpoints; held-out annotated
@@ -109,7 +118,7 @@ val_pipeline = [
     dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 train_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=True,
+    batch_size=8, num_workers=4, persistent_workers=False,
     sampler=dict(type="DefaultSampler", shuffle=True),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,
@@ -119,7 +128,7 @@ train_dataloader = dict(
     ),
 )
 val_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=True, drop_last=False,
+    batch_size=8, num_workers=4, persistent_workers=False, drop_last=False,
     sampler=dict(type="DefaultSampler", shuffle=False, round_up=False),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,
