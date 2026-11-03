@@ -151,3 +151,8 @@ default_hooks = dict(checkpoint=dict(
     save_best="birdgaze/PCK", rule="greater", interval=1, max_keep_ckpts=2))
 work_dir = str(repo_root / "Bird_HKE" / "trained_models" /
                "External_Baselines" / "RTMPose_M" / scenario / "seed_2026")
+
+# MMEngine exposes every non-module global as a config field. Remove
+# temporary pathlib objects/classes so pretty_text and config dumping
+# cannot serialize e.g. <class 'pathlib.Path'> as invalid Python.
+del Path, repo_root, dataset_root, converted_root
