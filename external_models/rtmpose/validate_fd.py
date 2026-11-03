@@ -17,12 +17,9 @@ from pathlib import Path
 def build_cfg(root):
     os.environ["BIRDGAZE_SCENARIO"] = "FD"
     os.environ["BIRD_HKE_REPO_ROOT"] = str(root)
-    import mmdet
-    from mmdet.utils import register_all_modules as register_mmdet
     from mmpose.utils import register_all_modules as register_mmpose
     from mmengine.config import Config
     from mmengine.utils import import_modules_from_strings
-    register_mmdet(init_default_scope=False)
     register_mmpose(init_default_scope=True)
     cfg = Config.fromfile(str(root / "external_models/rtmpose/birdgaze_rtmpose_m.py"))
     import_modules_from_strings(**cfg.custom_imports)
