@@ -93,7 +93,7 @@ def check_gpu(cfg, collected):
     if not torch.cuda.is_available():
         raise RuntimeError("GPU unavailable")
     if torch.cuda.get_device_capability()[0] >= 10:
-        raise RuntimeError("This Torch 2.1 CUDA 12.1 environment cannot run on Blackwell")
+        raise RuntimeError("This RTMPose-M single RTX 3090 configuration is not tested on Blackwell")
     print("GPU:", torch.cuda.get_device_name(0), flush=True)
     model = MODELS.build(cfg.model)
     model.init_weights()
