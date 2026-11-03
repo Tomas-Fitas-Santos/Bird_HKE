@@ -80,10 +80,15 @@ bash setup_rtmpose_env.sh --verify
 
 The isolated environment is at
 `/home/students/conda-envs/rtmpose-cu121`.
-The known compatible stack is Python 3.10, PyTorch 2.1.0+cu121,
+The compatible stack is Python 3.10, PyTorch 2.1.0 with the CUDA 12.1
+runtime (installed from the official `pytorch` and `nvidia` Conda channels),
 MMCV 2.1.0 (full CUDA-ops wheel), MMEngine 0.10.7, MMDetection 3.2.0,
-and the pinned MMPose source. No compiler/toolkit install is required
-for the known MMCV wheel.
+and the pinned MMPose source. No CUDA compiler installation is required for
+the known MMCV wheel. A large PyTorch 2.1.0+cu121 pip-wheel download
+previously failed with a SHA-256 mismatch on Titan; the setup now uses
+the official **split Conda packages** to avoid retrying that wheel.
+The script can safely be rerun in the already-created RTMPose environment.
+Never bypass package hash verification.
 
 ## 3. Mandatory disposable real-data/GPU check
 
