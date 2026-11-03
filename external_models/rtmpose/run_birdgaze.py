@@ -26,6 +26,8 @@ def recipe(scenario: str, root: Path, config: Path, dataset: Path) -> dict:
         "train_coco": converted / "train_coco.json",
         "val_coco": converted / "val_coco.json",
         "dataset_adapter": root / "external_models" / "rtmpose" / "dataset.py",
+        "crop_geometry": root / "external_models" / "rtmpose" / "geometry.py",
+        "annotation_converter": root / "external_models" / "convert_birdgaze_to_coco.py",
     }
     return {
         "scenario": scenario,
