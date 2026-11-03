@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 SCENARIOS = {
-    "FD": "birdgaze_full_dataset",
+    "FD": "BirdGaze_Full_Dataset",
     "OS": "birdgaze_original_subset",
     "CS": "birdgaze_corrected_subset",
 }
@@ -82,8 +82,9 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
             count += 1
         else:
             keypoints.extend((0.0, 0.0, 0))
-    if count == 0:
-        raise ValueError(f"{name}: zero available keypoints (would be dropped by COCO loader)")
+    # Keep samples with no available landmarks, exactly as Bird_HKE does.
+    # All four target weights will be zero: these images provide no pose-loss
+    # signal, but are part of the original dataset and must not be discarded.
     # Existing Bird_HKE stores crop scale in units of 200 px and later applies
     # a 1.25 padding. The MMPose GetBBoxCenterScale step supplies this padding.
     # Do not clip this box at image borders; the custom dataset preserves it.
@@ -108,6 +109,7 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
         raise TypeError(f"{source} must contain a list of BirdGaze records")
     images, annotations = [], []
     sizes = {}
+    unsupervised = 0
     for idx, record in enumerate(records, 1):
         resolved, file_path = locate_image(images_root, str(record["image"]))
         if resolved not in sizes:
@@ -116,6 +118,8 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
         image, annotation = convert_record(record, idx, images_root, sizes[resolved])
         images.append(image)
         annotations.append(annotation)
+        if annotation["num_keypoints"] == 0:
+            unsupervised += 1
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "info": {"description": "BirdGaze 4-keypoint evaluation-compatible export"},
@@ -130,7 +134,8 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
     temporary.replace(output)
     return {"source": str(source), "source_sha256": sha256(source),
             "output": str(output), "output_sha256": sha256(output),
-            "images": len(images), "annotations": len(annotations)}
+            "images": len(images), "annotations": len(annotations),
+            "samples_without_valid_keypoints": unsupervised}
 
 
 def main() -> None:
