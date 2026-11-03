@@ -4,10 +4,30 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from external_models.convert_birdgaze_to_coco import convert_record, convert_split
+from external_models.convert_birdgaze_to_coco import SCENARIOS, convert_record, convert_split
 
 
 class TestBirdGazeCocoConversion(unittest.TestCase):
+    def test_dataset_folders_match_titan(self):
+        self.assertEqual(SCENARIOS["FD"], "BirdGaze_Full_Dataset")
+        self.assertEqual(SCENARIOS["OS"], "birdgaze_original_subset")
+        self.assertEqual(SCENARIOS["CS"], "birdgaze_corrected_subset")
+
+    def test_zero_available_landmarks_are_preserved_without_supervision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            images = Path(folder)
+            (images / "test.png").write_bytes(b"fixture")
+            sample = {
+                "image": "test.png", "center": [20, 20], "scale": 0.3,
+                "joints": [[0, 0]] * 4,
+                "joints_valid": [0, 0, 0, 0],
+                "joints_vis": [0, 0, 0, 0],
+            }
+            image, ann = convert_record(sample, 1, images, (40, 40))
+            self.assertEqual(image["id"], 1)
+            self.assertEqual(ann["num_keypoints"], 0)
+            self.assertEqual(ann["keypoints"], [0.0, 0.0, 0] * 4)
+
     def test_preserves_keypoint_order_visibility_and_unclipped_crop(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -46,6 +66,7 @@ class TestBirdGazeCocoConversion(unittest.TestCase):
             result = convert_split(src, root / "images", root / "coco.json")
             output = json.loads((root / "coco.json").read_text())
             self.assertEqual(result["images"], 1)
+            self.assertEqual(result["samples_without_valid_keypoints"], 0)
             self.assertEqual(output["images"][0]["width"], 64)
             self.assertEqual(output["images"][0]["height"], 32)
             self.assertEqual(output["annotations"][0]["num_keypoints"], 4)
