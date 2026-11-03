@@ -26,21 +26,19 @@ class BirdGazeCocoDataset(CocoDataset):
 
     @staticmethod
     def _is_valid_instance(data_info):
-        """Keep the original BirdGaze images with no supervised keypoints.
+        """Preserve the full BirdGaze sample set, including missing joints.
 
-        The stock MMPose COCO loader removes samples when num_keypoints == 0.
-        Bird_HKE keeps them with all target weights set to zero. Retain those
-        images here too, while still rejecting invalid bounding boxes.
+        Stock CocoDataset rejects rows with zero keypoints or with only
+        sentinel coordinates. Bird_HKE retains them and masks their losses.
+        Only reject genuinely invalid/crowd instances or invalid pose boxes.
         """
-        if data_info.get("num_keypoints") == 0:
-            if data_info.get("iscrowd", 0):
-                return False
-            bbox = data_info.get("bbox")
-            if bbox is None or not np.isfinite(bbox).all():
-                return False
-            x1, y1, x2, y2 = bbox[0]
-            return bool(x2 > x1 and y2 > y1)
-        return CocoDataset._is_valid_instance(data_info)
+        if data_info.get("iscrowd", 0):
+            return False
+        bbox = data_info.get("bbox")
+        if bbox is None or bbox.shape != (1, 4) or not np.isfinite(bbox).all():
+            return False
+        x1, y1, x2, y2 = bbox[0]
+        return bool(x2 > x1 and y2 > y1)
 
 
 @TRANSFORMS.register_module()
@@ -93,4 +91,31 @@ class BirdGazeTopdownAffine(TopdownAffine):
         results["input_size"] = (w, h)
         results["input_center"] = results["bbox_center"][0]
         results["input_scale"] = results["bbox_scale"][0]
+        return results
+
+
+
+@TRANSFORMS.register_module()
+class BirdGazeRandomBBoxTransform(BaseTransform):
+    """Match Bird_HKE's clipped-normal scale/rotation augmentation.
+
+    Original JointsDataset uses s * clip(randn()*0.25+1, .75, 1.25)
+    and, with probability 0.6, clip(randn()*30, -60, 60) degrees.
+    The negative original scale is restored as an additional 180 degrees
+    by BirdGazeRestoreSignedScale downstream.
+    """
+
+    def transform(self, results):
+        n = len(results["bbox_scale"])
+        factor = np.clip(
+            np.random.randn(n, 1).astype(np.float32) * 0.25 + 1.0,
+            0.75, 1.25,
+        )
+        rotation = np.zeros(n, dtype=np.float32)
+        for i in range(n):
+            if __import__("random").random() <= 0.6:
+                rotation[i] = np.clip(
+                    np.random.randn() * 30.0, -60.0, 60.0)
+        results["bbox_scale"] = results["bbox_scale"] * factor
+        results["bbox_rotation"] = rotation
         return results
