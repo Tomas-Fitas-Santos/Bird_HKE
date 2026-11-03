@@ -145,8 +145,17 @@ val_dataloader = dict(
     ),
 )
 test_dataloader = val_dataloader
-val_evaluator = dict(type="PCKAccuracy", norm_item="bbox", thr=0.05, prefix="birdgaze")
-test_evaluator = val_evaluator
+# Fully replace AP-10K's inherited evaluator. Its ann_file key is valid
+# for CocoMetric but NOT for PCKAccuracy and prevents Runner.train() setup.
+# _delete_ removes all inherited fields in MMEngine's recursive config merge.
+val_evaluator = dict(
+    _delete_=True, type="PCKAccuracy", norm_item="bbox",
+    thr=0.05, prefix="birdgaze",
+)
+test_evaluator = dict(
+    _delete_=True, type="PCKAccuracy", norm_item="bbox",
+    thr=0.05, prefix="birdgaze",
+)
 default_hooks = dict(checkpoint=dict(
     save_best="birdgaze/PCK", rule="greater", interval=1, max_keep_ckpts=2))
 work_dir = str(repo_root / "Bird_HKE" / "trained_models" /
