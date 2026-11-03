@@ -10,7 +10,11 @@ _base_ = [
     "../../.external_pose_sources/rtmpose/projects/rtmpose/rtmpose/"
     "animal_2d_keypoint/rtmpose-m_8xb64-210e_ap10k-256x256.py"
 ]
-custom_imports = dict(imports=["external_models.rtmpose.dataset"], allow_failed_imports=False)
+custom_imports = dict(
+    imports=["external_models.rtmpose.dataset",
+             "external_models.rtmpose.model"],
+    allow_failed_imports=False,
+)
 
 scenario = os.environ["BIRDGAZE_SCENARIO"].upper()
 if scenario not in ("FD", "OS", "CS"):
@@ -44,6 +48,7 @@ metainfo = dict(
 # Retain the original RTMPose-M architecture and SimCC decoder/loss, but set
 # four landmarks and REMOVE pretrained backbone initialization.
 model = dict(
+    type="BirdGazeRTMPoseEstimator",
     backbone=dict(init_cfg=None, norm_cfg=dict(type="BN")),
     head=dict(out_channels=4),
     test_cfg=dict(flip_test=True),
@@ -59,6 +64,7 @@ val_batch_size = 8
 optim_wrapper = dict(
     accumulative_counts=8,
     optimizer=dict(type="AdamW", lr=5e-4, weight_decay=0.01),
+    paramwise_cfg=None,
     clip_grad=dict(max_norm=1.0, norm_type=2),
 )
 param_scheduler = [
@@ -70,19 +76,29 @@ auto_scale_lr = dict(enable=False, base_batch_size=64)
 # No second-stage pipeline switch or EMA, matching the single-stage Bird_HKE
 # protocol. Disable half-body and color augmentation used in RTMPose defaults.
 custom_hooks = []
+
+# Preserve orientation metadata for correct validation-time decoding.
+# Validation uses images only to select checkpoints; held-out annotated
+# videos will be the definitive model comparison.
+pack_meta_keys = (
+    "id", "img_id", "img_path", "category_id", "crowd_index",
+    "ori_shape", "img_shape", "input_size", "input_center", "input_scale",
+    "flip", "flip_direction", "flip_indices", "raw_ann_info", "dataset_name",
+    "birdgaze_negative_scale", "birdgaze_zero_scale",
+    "birdgaze_crop_offset",
+)
 train_pipeline = [
     dict(type="LoadImage", to_float32=False),
     dict(type="BirdGazeApplySourceCrop"),
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="RandomFlip", direction="horizontal", prob=0.5),
-    dict(type="RandomBBoxTransform", shift_factor=0.0, shift_prob=0.0,
-         scale_factor=(0.75, 1.25), rotate_factor=30, rotate_prob=0.6),
+    dict(type="BirdGazeRandomBBoxTransform"),
     dict(type="BirdGazeRestoreSignedScale"),
     dict(type="BirdGazeTopdownAffine", input_size=(256, 256)),
     dict(type="GenerateTarget", encoder=dict(
         type="SimCCLabel", input_size=(256, 256), sigma=(5.66, 5.66),
         simcc_split_ratio=2.0, normalize=False, use_dark=False)),
-    dict(type="PackPoseInputs"),
+    dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 val_pipeline = [
     dict(type="LoadImage", to_float32=False),
@@ -90,7 +106,7 @@ val_pipeline = [
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="BirdGazeRestoreSignedScale"),
     dict(type="BirdGazeTopdownAffine", input_size=(256, 256)),
-    dict(type="PackPoseInputs"),
+    dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 train_dataloader = dict(
     batch_size=8, num_workers=4, persistent_workers=True,
