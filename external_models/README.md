@@ -64,3 +64,7 @@ The conversion requires Pillow, but not torch, MMPose, or a GPU. It writes outpu
 **DO NOT launch RTMPose training yet:** the pinned upstream MMPose/MMDetection/MMCV environment, runtime config loading, actual MMPose forward/backward, and checkpoint-resume protections still need on-cluster validation. The current `(base)` test run skipped most framework tests. Run the existing Bird_HKE tests in its real environment too.
 
 The new RTMPose-M config is a starting integration, not a claim of fully equivalent augmentation across frameworks; the native RTMPose SimCC loss is preserved. ViTPose++-B and PoseBH-B adapters remain to be implemented.
+
+### Titan dataset-folder and zero-keypoint handling
+
+The Titan dataset folder is `BirdGaze_v2/BirdGaze_Full_Dataset` for FD, alongside `birdgaze_original_subset` and `birdgaze_corrected_subset`. The converter and RTMPose config use those exact case-sensitive names. BirdGaze images with **zero valid annotated landmarks** remain in the COCO export (reported as `samples_without_valid_keypoints`) and use zero target weights. The custom `BirdGazeCocoDataset` prevents the default COCO loader from discarding such images, matching the existing Bird_HKE loader's sample policy. They contribute no pose supervision; the model loss and validation behavior still need confirmation in the runtime checks.
