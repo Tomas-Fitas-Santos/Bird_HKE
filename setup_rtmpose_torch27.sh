@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Isolated RTMPose overlay using Titan's existing PyTorch 2.7/CUDA 12.8.
-# bash setup_rtmpose_torch27.sh --inspect | --build | --verify
+# bash setup_rtmpose_torch27.sh --inspect | --build | --repair | --verify
 # Never installs into the original Bird_HKE conda environment.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +37,13 @@ import sys, torch, mmcv, mmengine, mmpose
 from mmcv.ops import nms
 from mmpose.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
+from pathlib import Path
+binary_extensions = list(Path(mmcv.__file__).parent.glob("_ext*.so"))
+if not binary_extensions:
+    raise RuntimeError(
+        "MMCV installed without compiled mmcv._ext extension; "
+        "inspect the earlier build log before recompiling.")
+print("MMCV binary extension:", binary_extensions[0])
 assert sys.prefix != sys.base_prefix
 assert torch.__version__ == "2.7.0+cu128"
 assert mmcv.__version__ == "2.2.0"
@@ -50,6 +57,16 @@ print("Torch:", torch.__version__, "MMCV:", mmcv.__version__)
 print("MMEngine:", mmengine.__version__, "MMPose:", mmpose.__version__)
 print("MMCV CUDA operators: PASS")
 PY
+}
+repair() {
+  if [[ ! -x "$VENV/bin/python" ]]; then
+    echo "RTMPose virtualenv does not exist: $VENV" >&2
+    exit 1
+  fi
+  # yapf imports importlib_metadata on Python 3.10. This small repair
+  # changes only the RTMPose overlay, never the shared base torch environment.
+  "$VENV/bin/python" -m pip install --no-deps     'importlib-metadata==8.7.0' 'zipp==3.23.0'
+  verify
 }
 build() {
   inspect
@@ -81,7 +98,7 @@ PY
   # --no-deps prevents pip from replacing shared torch/CUDA/NumPy.
   "$VENV/bin/python" -m pip install --no-deps \
     ninja psutil 'mmengine==0.10.7' json-tricks 'xtcocotools>=1.12' \
-    chumpy munkres rich markdown-it-py mdurl termcolor addict 'yapf==0.40.1'
+    chumpy munkres rich markdown-it-py mdurl termcolor addict 'yapf==0.40.1'     'importlib-metadata==8.7.0' 'zipp==3.23.0'
   export TORCH_CUDA_ARCH_LIST=8.6
   export MMCV_WITH_OPS=1
   export FORCE_CUDA=1
@@ -94,6 +111,7 @@ PY
 case "${1:---inspect}" in
   --inspect) inspect; echo "Inspection only; no downloads or installs.";;
   --build) build;;
+  --repair) repair;;
   --verify) verify;;
-  *) echo "Usage: bash setup_rtmpose_torch27.sh --inspect|--build|--verify" >&2; exit 2;;
+  *) echo "Usage: bash setup_rtmpose_torch27.sh --inspect|--build|--repair|--verify" >&2; exit 2;;
 esac
