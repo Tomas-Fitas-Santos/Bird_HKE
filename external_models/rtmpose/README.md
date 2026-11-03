@@ -177,6 +177,17 @@ model, dataset processing, hyperparameters or checkpoint protocol.
 Pull the updated Phase 3 branch and rerun the **same** `--check-only` command;
 there is no reason to reinstall/rebuild the environment.
 
+**Serialized-dataset preflight correction (2026-11-03):** The next
+`--check-only` run reached FD COCO loading but incorrectly reported
+no `birdgaze_negative_scale` records. MMEngine BaseDataset defaults to
+`serialize_data=True` and clears `ds.data_list` after serialization.
+The validator now uses `ds.get_data_info(index)`, verifies the flags
+in the converted annotations, and checks their propagation into the
+packed MMPose samples. This does **not** disable serialization or drop
+any negative-/zero-scale samples. A stdlib-only regression test is
+`tests/test_rtmpose_serialized_dataset_preflight.py`. Pull and rerun
+preflight without reinstalling or reconverting anything.
+
 ## 4. Definitive FD training (only after preflight PASS)
 
 ```bash
