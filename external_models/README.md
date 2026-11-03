@@ -121,3 +121,58 @@ source JSON files having different hashes. Audit the differences before
 training to confirm the correction mechanism is not being lost. FD also
 contains signed crop scales requiring the updated adapter. Neither issue is
 fixed by using videos for final evaluation.
+
+## Confirmed source-annotation findings and converter corrections
+
+A read-only audit on Titan reported the following:
+
+| Partition | Train | Validation |
+|---|---:|---:|
+| FD source records | 77,740 | 8,821 |
+| FD negative `scale` | 2,447 | 322 |
+| FD zero `scale` | 33 | 0 |
+| OS records with original `bbox` | 2,579 | 260 |
+| CS records with corrected `bbox` | 19,534 | 2,302 |
+| OS/CS differing `bbox` values | 19,527 | 2,301 |
+
+**Crucial: OS and CS have identical keypoint coordinates, coordinate-validity,
+visibility, center, and scale fields, but different source `bbox` values.**
+The difference is the original crop applied *before* the affine warp. The
+earlier converter accidentally dropped this field, producing byte-identical
+OS and CS COCO exports. Those old generated exports must be regenerated.
+
+The current converter writes both the pose crop box and the original optional
+`birdgaze_source_bbox`, and reports source-box counts. The MMPose adapter
+applies the same source crop as Bird_HKE: floor/ceil coordinates, clip to the
+original image dimensions, crop the image, subtract the same offset from
+keypoints and the pose crop box, and only then perform pose-affine
+preprocessing. `external_models/rtmpose/geometry.py` is framework-neutral
+and unit-tested.
+
+For FD, negative source scales become positive box widths plus 180-degree
+rotation in the RTMPose transform. Original zero-scale samples are retained
+with an explicit flag, and the custom top-down affine reproduces the
+degenerate constant-pixel output of the original zero-scale warp. These
+exceptional cases **must be runtime-verified** on Titan before training.
+
+After pulling the updated branch, regenerate all three annotation exports and
+confirm that OS and CS SHA-256 output hashes now differ:
+
+```bash
+python -m unittest discover -s tests -p 'test_external_birdgaze_conversion.py' -v
+for scenario in OS CS FD; do
+  python -u external_models/convert_birdgaze_to_coco.py --scenario "$scenario" \
+    > "external_models/generated/conversion_${scenario}.log" 2>&1
+  code=$?
+  echo "$scenario exit=$code"
+  tail -n 20 "external_models/generated/conversion_${scenario}.log"
+done
+sha256sum external_models/generated/{OS,CS}/{train,val}_coco.json
+```
+
+These exports are training **inputs**, not the independently annotated video
+evaluation benchmark. Never alter the original image annotation files.
+
+**Runtime status:** The converted-data fixture tests and exact MMPose
+integration (crop, signed/zero-scale transforms, model construction and
+checkpoint resume) still require on-cluster confirmation.
