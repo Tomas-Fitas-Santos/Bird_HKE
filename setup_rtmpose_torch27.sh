@@ -32,18 +32,31 @@ PY
   df -h "$ROOT" "$(dirname "$VENV")"
 }
 verify() {
+  # Check the actual binary BEFORE importing MMCV/MMEngine: missing Python
+  # packages must not hide the absence of the native extension.
+  "$VENV/bin/python" - <<'PY'
+import sys
+from pathlib import Path
+root = (Path(sys.prefix) / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages" / "mmcv")
+binaries = sorted(root.glob("_ext*.so"))
+print("MMCV installed package directory:", root)
+if not binaries:
+    raise RuntimeError(
+        "MMCV 2.2.0 is installed WITHOUT mmcv._ext. "
+        "The successful 5.4 MB wheel may be Python-only. "
+        "Check for 'building mmcv._ext' or compiler output in "
+        "external_models/generated/rtmpose_torch27_build.log. "
+        "Do not repeat the long build blindly.")
+for binary in binaries:
+    print("MMCV compiled binary:", binary, "bytes:", binary.stat().st_size)
+PY
   "$VENV/bin/python" - <<'PY'
 import sys, torch, mmcv, mmengine, mmpose
 from mmcv.ops import nms
 from mmpose.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
-from pathlib import Path
-binary_extensions = list(Path(mmcv.__file__).parent.glob("_ext*.so"))
-if not binary_extensions:
-    raise RuntimeError(
-        "MMCV installed without compiled mmcv._ext extension; "
-        "inspect the earlier build log before recompiling.")
-print("MMCV binary extension:", binary_extensions[0])
 assert sys.prefix != sys.base_prefix
 assert torch.__version__ == "2.7.0+cu128"
 assert mmcv.__version__ == "2.2.0"
@@ -63,9 +76,14 @@ repair() {
     echo "RTMPose virtualenv does not exist: $VENV" >&2
     exit 1
   fi
-  # yapf imports importlib_metadata on Python 3.10. This small repair
-  # changes only the RTMPose overlay, never the shared base torch environment.
-  "$VENV/bin/python" -m pip install --no-deps     'importlib-metadata==8.7.0' 'zipp==3.23.0'
+  # YAPF 0.40.1 requires importlib-metadata, platformdirs and tomli.
+  # Install their small, pure-Python dependencies into the isolated overlay.
+  # Keep --no-deps so pip cannot replace shared PyTorch/CUDA packages.
+  "$VENV/bin/python" -m pip install --no-deps \
+    'importlib-metadata==8.7.0' 'zipp==3.23.0' \
+    'platformdirs==4.4.0' 'tomli==2.2.1'
+  echo "Checking package dependency metadata (report only):"
+  "$VENV/bin/python" -m pip check || true
   verify
 }
 build() {
@@ -98,7 +116,9 @@ PY
   # --no-deps prevents pip from replacing shared torch/CUDA/NumPy.
   "$VENV/bin/python" -m pip install --no-deps \
     ninja psutil 'mmengine==0.10.7' json-tricks 'xtcocotools>=1.12' \
-    chumpy munkres rich markdown-it-py mdurl termcolor addict 'yapf==0.40.1'     'importlib-metadata==8.7.0' 'zipp==3.23.0'
+    chumpy munkres rich markdown-it-py mdurl termcolor addict \
+    'yapf==0.40.1' 'importlib-metadata==8.7.0' 'zipp==3.23.0' \
+    'platformdirs==4.4.0' 'tomli==2.2.1'
   export TORCH_CUDA_ARCH_LIST=8.6
   export MMCV_WITH_OPS=1
   export FORCE_CUDA=1
