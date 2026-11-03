@@ -44,7 +44,7 @@ def require_pinned_upstream(root: Path) -> Path:
 
 def runtime_versions() -> dict:
     required = ("torch", "torchvision", "numpy", "mmcv", "mmengine",
-                "mmdet", "mmpose")
+                "mmpose")
     try:
         return {name: metadata.version(name) for name in required}
     except metadata.PackageNotFoundError as exc:
