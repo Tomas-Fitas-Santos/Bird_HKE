@@ -35,3 +35,6 @@ Bird_HKE/*.pth
 Thumbs.db
 # Pinned external source checkouts (managed by setup_external_pose_sources.sh)
 /.external_pose_sources/
+
+# Generated, reproducible COCO annotation exports
+/external_models/generated/
