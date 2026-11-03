@@ -71,23 +71,25 @@ auto_scale_lr = dict(enable=False, base_batch_size=64)
 # protocol. Disable half-body and color augmentation used in RTMPose defaults.
 custom_hooks = []
 train_pipeline = [
-    dict(type="LoadImage"),
+    dict(type="LoadImage", to_float32=False),
+    dict(type="BirdGazeApplySourceCrop"),
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="RandomFlip", direction="horizontal", prob=0.5),
     dict(type="RandomBBoxTransform", shift_factor=0.0, shift_prob=0.0,
          scale_factor=(0.75, 1.25), rotate_factor=30, rotate_prob=0.6),
     dict(type="BirdGazeRestoreSignedScale"),
-    dict(type="TopdownAffine", input_size=(256, 256)),
+    dict(type="BirdGazeTopdownAffine", input_size=(256, 256)),
     dict(type="GenerateTarget", encoder=dict(
         type="SimCCLabel", input_size=(256, 256), sigma=(5.66, 5.66),
         simcc_split_ratio=2.0, normalize=False, use_dark=False)),
     dict(type="PackPoseInputs"),
 ]
 val_pipeline = [
-    dict(type="LoadImage"),
+    dict(type="LoadImage", to_float32=False),
+    dict(type="BirdGazeApplySourceCrop"),
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="BirdGazeRestoreSignedScale"),
-    dict(type="TopdownAffine", input_size=(256, 256)),
+    dict(type="BirdGazeTopdownAffine", input_size=(256, 256)),
     dict(type="PackPoseInputs"),
 ]
 train_dataloader = dict(
