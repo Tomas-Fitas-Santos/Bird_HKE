@@ -55,10 +55,13 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
     w_img, h_img = image_size
     center = record["center"]
     scale = float(record["scale"])
-    if len(center) != 2 or not all(math.isfinite(float(q)) for q in center) or float(center[0]) < 0:
+    if len(center) != 2 or not all(math.isfinite(float(q)) for q in center):
         raise ValueError(f"{name}: invalid center")
-    if not math.isfinite(scale) or scale <= 0:
-        raise ValueError(f"{name}: invalid scale {scale!r}")
+    if not math.isfinite(scale) or scale == 0:
+        raise ValueError(f"{name}: invalid zero/nonfinite scale {scale!r}")
+    # Bird_HKE's signed negative scales rotate the image crop by 180 degrees.
+    # MMPose needs a positive bbox; the companion transform restores the angle.
+    negative_scale = scale < 0
     joints = record["joints"]
     if len(joints) != 4:
         raise ValueError(f"{name}: expected 4 keypoints, got {len(joints)}")
@@ -88,7 +91,9 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
     # Existing Bird_HKE stores crop scale in units of 200 px and later applies
     # a 1.25 padding. The MMPose GetBBoxCenterScale step supplies this padding.
     # Do not clip this box at image borders; the custom dataset preserves it.
-    side = 200.0 * scale
+    # Bird_HKE skips 1.25 padding when center_x=-1, so compensate for the
+    # MMPose pipeline's default 1.25 crop padding in that exceptional case.
+    side = 200.0 * abs(scale) * (0.8 if float(center[0]) == -1 else 1.0)
     x0 = float(center[0]) - side / 2.0
     y0 = float(center[1]) - side / 2.0
     img = {"id": image_id, "file_name": path_name, "width": w_img, "height": h_img}
@@ -96,6 +101,7 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
         "id": image_id, "image_id": image_id, "category_id": 1,
         "bbox": [x0, y0, side, side], "area": side * side,
         "iscrowd": 0, "num_keypoints": count, "keypoints": keypoints,
+        "birdgaze_negative_scale": negative_scale,
     }
     return img, ann
 
@@ -110,6 +116,7 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
     images, annotations = [], []
     sizes = {}
     unsupervised = 0
+    negative_scale_count = 0
     for idx, record in enumerate(records, 1):
         resolved, file_path = locate_image(images_root, str(record["image"]))
         if resolved not in sizes:
@@ -120,6 +127,8 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
         annotations.append(annotation)
         if annotation["num_keypoints"] == 0:
             unsupervised += 1
+        if annotation["birdgaze_negative_scale"]:
+            negative_scale_count += 1
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "info": {"description": "BirdGaze 4-keypoint evaluation-compatible export"},
@@ -135,7 +144,8 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
     return {"source": str(source), "source_sha256": sha256(source),
             "output": str(output), "output_sha256": sha256(output),
             "images": len(images), "annotations": len(annotations),
-            "samples_without_valid_keypoints": unsupervised}
+            "samples_without_valid_keypoints": unsupervised,
+            "samples_with_negative_scale": negative_scale_count}
 
 
 def main() -> None:
