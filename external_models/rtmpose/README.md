@@ -198,6 +198,43 @@ $RTMP_PY -m unittest discover -s tests \
 Pull and rerun the FD GPU preflight without reinstalling or reconverting
 anything.
 
+**Training-start evaluator correction (2026-11-03):** Titan's first
+definitive launch passed the GPU preflight, then failed before epoch 1 at
+`PCKAccuracy.__init__() got an unexpected keyword argument 'ann_file'`.
+The original RTMPose AP-10K base config contributed an inherited `ann_file`
+field to `val_evaluator` and `test_evaluator`. Both are now specified
+with `_delete_=True`, so the merged config contains only parameters
+accepted by `PCKAccuracy`. The preflight now builds both metric objects
+and **calculates `birdgaze/PCK` from real FD validation predictions**,
+which the checkpoint selector will use.
+
+The failed launch created a work directory and recipe manifest. Because
+the configuration SHA has changed, `--retry-start` correctly refuses to
+reuse the old recipe. Do **not** delete the failed directory or bypass the
+manifest check. After the updated GPU preflight passes, inspect for any
+checkpoints and archive that failed, pre-epoch directory (with all logs and
+its original manifest) by renaming it:
+
+```bash
+WORK="Bird_HKE/trained_models/External_Baselines/RTMPose_M/FD/seed_2026"
+ARCHIVE="${WORK}_failed_pre_epoch_20261103_1827"
+if [ -d "$WORK" ]; then
+  if [ -e "$ARCHIVE" ]; then
+    echo "Archive exists; refusing to overwrite: $ARCHIVE" >&2
+  elif [ -e "$WORK/last_checkpoint" ] ||
+       [ -n "$(find "$WORK" -type f -name '*.pth' -print -quit)" ]; then
+    echo "Checkpoint detected; investigate before archiving" >&2
+  else
+    mv -- "$WORK" "$ARCHIVE"
+    echo "Preserved failed pre-epoch run at: $ARCHIVE"
+  fi
+fi
+```
+
+Before relaunching, check that `$WORK` no longer exists and that no
+previous training process remains active. The original run evidence is
+preserved, and the next launch will write a fresh recipe manifest.
+
 ## 4. Definitive FD training (only after preflight PASS)
 
 ```bash
@@ -226,11 +263,12 @@ present. Existing native Bird_HKE checkpoints are never modified.
 
 ## Readiness and outstanding work
 
-The code and isolated overlay setup are committed, but the
-MMCV 2.2.0 source build and **MMPose data/GPU tests have not yet passed
-on Titan**. Please run the preflight and share the
-log or first error. Do not launch definitive training based only on
-Python syntax or unit fixture tests.
+The isolated PyTorch 2.7/CUDA 12.8 MMCV 2.2.0 setup and real-data
+RTMPose-M FD GPU preflight **passed on Titan** on 2026-11-03.
+The first definitive launch failed **before epoch 1** due to the
+inherited AP-10K evaluator's unsupported `ann_file` key. That configuration
+is now corrected; the expanded GPU preflight and actual 100-epoch training
+must still be rerun and validated on Titan.
 
 ViTPose++-B and PoseBH-B remain to be integrated next; neither is trained
 by this RTMPose launcher. Once all FD models have trained, use the same
