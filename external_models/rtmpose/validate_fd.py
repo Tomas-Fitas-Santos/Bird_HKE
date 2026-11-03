@@ -57,12 +57,14 @@ def check_data(cfg, root):
                 "records were lost during COCO filtering"
             )
         indices = [0]
-        if split == "train":
-            for flag in ("birdgaze_negative_scale", "birdgaze_zero_scale"):
-                match = next((i for i, row in enumerate(ds.data_list) if row.get(flag)), None)
-                if match is None:
-                    raise RuntimeError(f"No FD training record with {flag}")
-                indices.append(match)
+        # FD train contains negative and zero scales; FD validation contains
+        # negative scales too. Exercise each unusual affine case directly.
+        flags = ("birdgaze_negative_scale", "birdgaze_zero_scale") if split == "train" else ("birdgaze_negative_scale",)
+        for flag in flags:
+            match = next((i for i, row in enumerate(ds.data_list) if row.get(flag)), None)
+            if match is None:
+                raise RuntimeError(f"No FD {split} record with {flag}")
+            indices.append(match)
         samples = []
         for i in indices:
             packed = ds[i]
@@ -129,12 +131,17 @@ def check_gpu(cfg, collected):
     val_batch = model.data_preprocessor(val_batch, training=False)
     with torch.no_grad():
         outputs = model.predict(val_batch["inputs"], val_batch["data_samples"])
-    pred = outputs[0].pred_instances.keypoints
-    if tuple(pred.shape) != (1, 4, 2):
-        raise RuntimeError(f"Bad RTMPose validation predictions: {pred.shape}")
-    if not torch.as_tensor(pred).isfinite().all():
-        raise RuntimeError("Nonfinite RTMPose predictions")
-    print("Image validation inference and four-keypoint decoding: PASS", flush=True)
+    if len(outputs) != len(val_items):
+        raise RuntimeError("Validation inference lost samples")
+    for i, output in enumerate(outputs):
+        pred = output.pred_instances.keypoints
+        if tuple(pred.shape) != (1, 4, 2):
+            raise RuntimeError(f"Bad RTMPose validation predictions at {i}: {pred.shape}")
+        if not torch.as_tensor(pred).isfinite().all():
+            raise RuntimeError(f"Nonfinite RTMPose predictions at {i}")
+    if not outputs[1].metainfo.get("birdgaze_negative_scale", False):
+        raise RuntimeError("Negative-scale validation orientation metadata was lost")
+    print("Image validation inference and signed-scale decoding: PASS", flush=True)
 
 
 def main():
