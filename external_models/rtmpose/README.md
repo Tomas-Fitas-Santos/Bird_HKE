@@ -1,5 +1,21 @@
 # RTMPose-M BirdGaze FD — Phase 3
 
+> **Titan setup note (2026-11-03).** The original isolated PyTorch 2.1
+> Conda route was paused because the solver requests **2.75 GB** of downloads
+> and the earlier 2.2 GB PyTorch pip wheel failed its hash check.
+> **Do not run the heavy `setup_rtmpose_env.sh` on Titan again yet.**
+> The RTMPose-M config now uses the equivalent **MMPose-native CSPNeXt**
+> backbone and no longer requires MMDetection. We are evaluating a
+> lighter isolated environment that reuses the existing PyTorch
+> **2.7.0+cu128**, but compatibility of the compiled MMCV build with
+> exactly PyTorch 2.7.0 has **not yet been proven**. A public third-party
+> prebuilt MMCV 2.2.0 CUDA 12.8 wheel is documented for PyTorch
+> **2.7.1**, not the installed 2.7.0. Do not silently assume their
+> binary compatibility. Check the local CUDA compiler and available
+> matching wheels before installing; the native Bird_HKE environment
+> must not be modified.
+
+
 This is the **first** of the three external architectures to be integrated.
 The implementation is committed to the existing `phase-3-passive-uncertainty`
 branch; no parallel setup branch is used. Do not start definitive training
