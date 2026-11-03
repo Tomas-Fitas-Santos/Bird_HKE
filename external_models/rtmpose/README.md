@@ -167,6 +167,16 @@ forward/backward/optimizer step, and validation decoding. It creates no
 definitive run directory and changes no checkpoint. Fix any real runtime
 failures before starting training.
 
+**Titan config-parser fix (2026-11-03):** After the CUDA setup passed,
+MMEngine 0.10.7 raised `ConfigParsingError` before loading any BirdGaze data.
+The custom config declared Python imports before its legacy `_base_`
+inheritance, causing MMEngine to detect the wrong lazy-import format.
+The config now declares `_base_` before the imports and removes temporary
+`Path` variables before serialization. This change does not alter the
+model, dataset processing, hyperparameters or checkpoint protocol.
+Pull the updated Phase 3 branch and rerun the **same** `--check-only` command;
+there is no reason to reinstall/rebuild the environment.
+
 ## 4. Definitive FD training (only after preflight PASS)
 
 ```bash
