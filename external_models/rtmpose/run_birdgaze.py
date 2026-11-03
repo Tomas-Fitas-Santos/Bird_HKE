@@ -154,6 +154,11 @@ def main() -> None:
     env = dict(os.environ)
     env["BIRDGAZE_SCENARIO"] = args.scenario
     env["BIRD_HKE_REPO_ROOT"] = str(ROOT)
+    # PyTorch deterministic algorithms require a configured cuBLAS workspace
+    # for CUDA >= 10.2. This MUST be set before the child Python processes
+    # initialize CUDA. Both GPU preflight and actual training use the same
+    # exact setting (do not relax deterministic_algorithms).
+    env["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     # The pinned upstream checkout imports an unrelated RTMOHead that depends
     # on incompatible MMDetection. The local overlay changes *only* the
     # RTMOHead import/registration, never the RTMPose-M architecture.
@@ -163,6 +168,8 @@ def main() -> None:
     print("RTMPose-M FD recipe SHA256:",
           hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest(),
           flush=True)
+    print("RTMPose-M CUDA determinism: CUBLAS_WORKSPACE_CONFIG=",
+          env["CUBLAS_WORKSPACE_CONFIG"], flush=True)
 
     # Perform the real-data/GPU check before any definitive run directory is
     # created. The checks are isolated to their own Python process.
