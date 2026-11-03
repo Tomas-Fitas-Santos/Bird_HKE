@@ -53,11 +53,16 @@ for binary in binaries:
     print("MMCV compiled binary:", binary, "bytes:", binary.stat().st_size)
 PY
   "$VENV/bin/python" - <<'PY'
-import sys, torch, mmcv, mmengine, mmpose
+import sys, numpy as np, torch, mmcv, mmengine
+import xtcocotools._mask
+import mmpose
 from mmcv.ops import nms
 from mmpose.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
 assert sys.prefix != sys.base_prefix
+print("NumPy:", np.__version__, "from:", np.__file__)
+assert np.__version__ == "1.26.4", (
+    "RTMPose overlay requires NumPy 1.26.4 for xtcocotools binary ABI")
 assert torch.__version__ == "2.7.0+cu128"
 assert mmcv.__version__ == "2.2.0"
 boxes = torch.tensor([[0.,0.,20.,20.],[1.,1.,21.,21.]], device="cuda")
@@ -76,12 +81,21 @@ repair() {
     echo "RTMPose virtualenv does not exist: $VENV" >&2
     exit 1
   fi
-  # YAPF 0.40.1 requires importlib-metadata, platformdirs and tomli.
-  # Install their small, pure-Python dependencies into the isolated overlay.
-  # Keep --no-deps so pip cannot replace shared PyTorch/CUDA packages.
+  # xtcocotools._mask was built against the NumPy 1.x ABI. Titan's
+  # inherited NumPy 2.x reports "numpy.dtype size changed" on import.
+  # Overlay NumPy only in the virtualenv; preserve the base PyTorch/CUDA.
+  # --no-deps is intentional: never let pip replace shared torch packages.
   "$VENV/bin/python" -m pip install --no-deps \
+    'numpy==1.26.4' 'Cython==3.0.12' 'Pygments==2.19.2' \
     'importlib-metadata==8.7.0' 'zipp==3.23.0' \
     'platformdirs==4.4.0' 'tomli==2.2.1'
+  "$VENV/bin/python" - <<'PY'
+import numpy, torch
+print("Overlay NumPy:", numpy.__version__, numpy.__file__)
+print("Shared PyTorch:", torch.__version__, torch.__file__)
+assert numpy.__version__ == "1.26.4"
+assert torch.__version__ == "2.7.0+cu128"
+PY
   echo "Checking package dependency metadata (report only):"
   "$VENV/bin/python" -m pip check || true
   verify
@@ -118,7 +132,8 @@ PY
     ninja psutil 'mmengine==0.10.7' json-tricks 'xtcocotools>=1.12' \
     chumpy munkres rich markdown-it-py mdurl termcolor addict \
     'yapf==0.40.1' 'importlib-metadata==8.7.0' 'zipp==3.23.0' \
-    'platformdirs==4.4.0' 'tomli==2.2.1'
+    'platformdirs==4.4.0' 'tomli==2.2.1' \
+    'numpy==1.26.4' 'Cython==3.0.12' 'Pygments==2.19.2'
   export TORCH_CUDA_ARCH_LIST=8.6
   export MMCV_WITH_OPS=1
   export FORCE_CUDA=1
