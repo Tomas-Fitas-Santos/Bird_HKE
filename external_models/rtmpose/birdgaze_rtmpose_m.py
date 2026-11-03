@@ -17,7 +17,7 @@ if scenario not in ("FD", "OS", "CS"):
     raise ValueError(f"BIRDGAZE_SCENARIO must be FD, OS or CS; got {scenario!r}")
 repo_root = Path(os.environ.get("BIRD_HKE_REPO_ROOT", ".")).resolve()
 dataset_name = {
-    "FD": "birdgaze_full_dataset",
+    "FD": "BirdGaze_Full_Dataset",
     "OS": "birdgaze_original_subset",
     "CS": "birdgaze_corrected_subset",
 }[scenario]
