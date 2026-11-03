@@ -185,8 +185,18 @@ The validator now uses `ds.get_data_info(index)`, verifies the flags
 in the converted annotations, and checks their propagation into the
 packed MMPose samples. This does **not** disable serialization or drop
 any negative-/zero-scale samples. A stdlib-only regression test is
-`tests/test_rtmpose_serialized_dataset_preflight.py`. Pull and rerun
-preflight without reinstalling or reconverting anything.
+`tests/test_rtmpose_serialized_dataset_preflight.py`. Run it with
+`unittest discover` because `tests` is not necessarily an importable
+Python package (and may conflict with a third-party package):
+
+```bash
+RTMP_PY=/home/students/conda-envs/rtmpose-torch27-venv/bin/python
+$RTMP_PY -m unittest discover -s tests \
+  -p 'test_rtmpose_serialized_dataset_preflight.py' -v
+```
+
+Pull and rerun the FD GPU preflight without reinstalling or reconverting
+anything.
 
 ## 4. Definitive FD training (only after preflight PASS)
 
