@@ -92,9 +92,18 @@ PY="${PREFIX}/bin/python"
 
 "${PY}" -m pip install --upgrade "pip<25" "setuptools<75" wheel
 "${PY}" -m pip install "numpy==1.26.4" "opencv-python==4.8.1.78"
-"${PY}" -m pip install \
-  "torch==2.1.0+cu121" "torchvision==0.16.0+cu121" \
-  --index-url https://download.pytorch.org/whl/cu121
+# The official PyTorch CUDA 12.1 pip wheel is a single ~2.2 GB download.
+# Some cluster connections interrupt it and pip correctly rejects its hash.
+# Use the official CONDA CUDA 12.1 build instead (separate verified packages).
+# Do not reinstall it when rerunning the setup script after a partial failure.
+if "${PY}" -c 'import torch,torchvision; assert torch.__version__.split("+")[0] == "2.1.0" and torch.version.cuda == "12.1" and torchvision.__version__.split("+")[0] == "0.16.0"' >/dev/null 2>&1; then
+  echo "Compatible CUDA 12.1 PyTorch/torchvision already installed; keeping them."
+else
+  echo "Installing PyTorch 2.1.0 + CUDA 12.1 via official conda channels."
+  conda install --prefix "${PREFIX}" -y \
+    pytorch=2.1.0 torchvision=0.16.0 pytorch-cuda=12.1 \
+    --override-channels -c pytorch -c nvidia -c defaults
+fi
 # Install the known *binary* CUDA-ops MMCV wheel; no source compilation.
 "${PY}" -m pip install "${MMCV_WHEEL}"
 "${PY}" -m pip install "mmengine==0.10.7" "mmdet==3.2.0" \
