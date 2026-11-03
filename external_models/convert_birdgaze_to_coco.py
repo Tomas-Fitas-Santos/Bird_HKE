@@ -57,10 +57,12 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
     scale = float(record["scale"])
     if len(center) != 2 or not all(math.isfinite(float(q)) for q in center):
         raise ValueError(f"{name}: invalid center")
-    if not math.isfinite(scale) or scale == 0:
-        raise ValueError(f"{name}: invalid zero/nonfinite scale {scale!r}")
-    # Bird_HKE's signed negative scales rotate the image crop by 180 degrees.
-    # MMPose needs a positive bbox; the companion transform restores the angle.
+    if not math.isfinite(scale):
+        raise ValueError(f"{name}: nonfinite scale {scale!r}")
+    # An original zero scale produces a degenerate affine warp (all pixels are
+    # sampled from the top-left input pixel). The custom MMPose transform
+    # reproduces this rather than dropping the 33 FD training samples.
+    zero_scale = scale == 0
     negative_scale = scale < 0
     joints = record["joints"]
     if len(joints) != 4:
@@ -77,8 +79,8 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
         x, y = float(joint[0]), float(joint[1])
         valid = bool(float(explicit[i]) > 0) if explicit is not None else (
             available(x, y) or (visible is not None and float(visible[i]) > 0))
-        if valid and not available(x, y):
-            raise ValueError(f"{name}: keypoint {i} marked valid with invalid coordinate")
+        if valid and not math.isfinite(x + y):
+            raise ValueError(f"{name}: keypoint {i} has nonfinite annotated coordinates")
         if valid:
             flag = 2 if visible is None or float(visible[i]) > 0 else 1
             keypoints.extend((x, y, flag))
@@ -94,6 +96,8 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
     # Bird_HKE skips 1.25 padding when center_x=-1, so compensate for the
     # MMPose pipeline's default 1.25 crop padding in that exceptional case.
     side = 200.0 * abs(scale) * (0.8 if float(center[0]) == -1 else 1.0)
+    if zero_scale:
+        side = 1.0  # positive placeholder; custom affine reproduces zero scale
     x0 = float(center[0]) - side / 2.0
     y0 = float(center[1]) - side / 2.0
     img = {"id": image_id, "file_name": path_name, "width": w_img, "height": h_img}
@@ -102,6 +106,9 @@ def convert_record(record: dict, image_id: int, images: Path, image_size: tuple[
         "bbox": [x0, y0, side, side], "area": side * side,
         "iscrowd": 0, "num_keypoints": count, "keypoints": keypoints,
         "birdgaze_negative_scale": negative_scale,
+        "birdgaze_zero_scale": zero_scale,
+        # IMPORTANT: the source bbox is a pre-affine crop, NOT the pose bbox.
+        "birdgaze_source_bbox": record.get("bbox"),
     }
     return img, ann
 
@@ -117,6 +124,8 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
     sizes = {}
     unsupervised = 0
     negative_scale_count = 0
+    zero_scale_count = 0
+    source_bbox_count = 0
     for idx, record in enumerate(records, 1):
         resolved, file_path = locate_image(images_root, str(record["image"]))
         if resolved not in sizes:
@@ -129,6 +138,10 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
             unsupervised += 1
         if annotation["birdgaze_negative_scale"]:
             negative_scale_count += 1
+        if annotation["birdgaze_zero_scale"]:
+            zero_scale_count += 1
+        if annotation["birdgaze_source_bbox"] is not None:
+            source_bbox_count += 1
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "info": {"description": "BirdGaze 4-keypoint evaluation-compatible export"},
@@ -145,7 +158,9 @@ def convert_split(source: Path, images_root: Path, output: Path) -> dict:
             "output": str(output), "output_sha256": sha256(output),
             "images": len(images), "annotations": len(annotations),
             "samples_without_valid_keypoints": unsupervised,
-            "samples_with_negative_scale": negative_scale_count}
+            "samples_with_negative_scale": negative_scale_count,
+            "samples_with_zero_scale": zero_scale_count,
+            "samples_with_source_bbox": source_bbox_count}
 
 
 def main() -> None:
