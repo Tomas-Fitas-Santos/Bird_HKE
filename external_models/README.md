@@ -91,3 +91,33 @@ that either metadata-only fields were corrected or the converter currently
 ignores fields relevant to the original Bird_HKE preprocessing (e.g. `bbox`).
 The audit reports exact fields differing. **Do not start the nine baseline
 training runs until the differences are understood and faithfully represented**.
+
+## Definitive evaluation protocol: held-out annotated videos
+
+The BirdGaze train/val **image** partitions serve different purposes from the
+**independently annotated held-out videos**:
+
+- Train once per architecture and FD/OS/CS scenario (fixed seed 2026) on the
+  corresponding training images.
+- Use image validation only for checkpoint selection and training diagnostics.
+  Do not select checkpoints, adapt preprocessing, optimize filters or tune
+  hyperparameters based on final annotated-video performance.
+- Use the identical independently annotated video test collection to evaluate
+  all final checkpoints. Convert all model outputs to the original video-frame
+  coordinate system and compute PCK (with the existing normalization
+  convention), per-keypoint errors, and temporal metrics under the same
+  frame-matching/missing-landmark rules. Report raw and filtered results
+  separately, with fixed filter parameters across models.
+- Keep video/source leakage out of the image training and checkpoint-selection
+  sets. If video sequences are sampled into both places, verify source-level
+  disjointness before reporting results.
+- Report image validation scores as training diagnostics, **not as the final
+  manuscript model-comparison results**. Bootstrap uncertainty, if used, should
+  resample video sequences rather than treating highly correlated frames as
+  independent data points.
+
+**Current blocker:** OS and CS COCO exports on Titan were byte-identical despite
+source JSON files having different hashes. Audit the differences before
+training to confirm the correction mechanism is not being lost. FD also
+contains signed crop scales requiring the updated adapter. Neither issue is
+fixed by using videos for final evaluation.
