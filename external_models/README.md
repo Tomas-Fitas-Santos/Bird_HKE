@@ -39,3 +39,28 @@ RTMPose targets modern MMPose/MMEngine, whereas ViTPose++ and PoseBH contain old
 ## Resume-policy update in this branch
 
 `Bird_HKE/tools/train.py` now uses the checkpoint's `training_protocol_hash` as its reproducibility gate instead of checking the recorded Git commit or requiring a clean Git working tree. Model, optimizer, LR scheduler, and RNG checkpoint restoration remain strict. The code revision and runtime are still recorded as provenance. This applies to the **existing Bird_HKE trainer**; separate upstream trainers need equivalent guards if custom checkpoint resumption is required.
+
+## RTMPose-M initial BirdGaze adapter (prepared; NOT GPU-validated)
+
+Files committed:
+- `external_models/convert_birdgaze_to_coco.py`: converts source annotation JSON into COCO-style records without modifying the original annotations or images. It maps the four landmarks and missing/occluded visibility correctly, and keeps the original crop center/scale.
+- `external_models/rtmpose/dataset.py`: custom MMPose dataset to avoid clipping crop bboxes at image boundaries.
+- `external_models/rtmpose/birdgaze_rtmpose_m.py`: pinned upstream RTMPose-M base with 4-keypoint SimCC head, **no pretrained initialization**, FD/OS/CS selection from the environment, and 100-epoch training protocol. Its PCK validation score is used for checkpoint selection.
+- `tests/test_external_birdgaze_conversion.py`: fixture tests for coordinate/visibility preservation.
+
+Generate native annotations from the existing dataset, without copying media:
+
+```bash
+cd /mnt/storage/TomasSantos/Bird_HKE
+git pull --ff-only origin phase-3-passive-uncertainty
+python external_models/convert_birdgaze_to_coco.py --scenario FD
+python external_models/convert_birdgaze_to_coco.py --scenario OS
+python external_models/convert_birdgaze_to_coco.py --scenario CS
+python -m unittest discover -s tests
+```
+
+The conversion requires Pillow, but not torch, MMPose, or a GPU. It writes outputs to `external_models/generated/`, ignored by Git. Every annotation source file is SHA-256 recorded.
+
+**DO NOT launch RTMPose training yet:** the pinned upstream MMPose/MMDetection/MMCV environment, runtime config loading, actual MMPose forward/backward, and checkpoint-resume protections still need on-cluster validation. The current `(base)` test run skipped most framework tests. Run the existing Bird_HKE tests in its real environment too.
+
+The new RTMPose-M config is a starting integration, not a claim of fully equivalent augmentation across frameworks; the native RTMPose SimCC loss is preserved. ViTPose++-B and PoseBH-B adapters remain to be implemented.
