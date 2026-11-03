@@ -108,8 +108,9 @@ def compare_scenarios(root: Path, split: str) -> None:
     if differences and not any(key in TRAINING_FIELDS for key in differences):
         print("  WARNING: Only fields outside the current training-data contract differ.")
     if differences.get("bbox", 0):
-        print("  WARNING: Original Bird_HKE applies per-record bbox cropping; "
-              "current external converter does NOT reproduce that behavior.")
+        print("  IMPORTANT: Original Bird_HKE applies per-record bbox cropping. "
+              "The external export preserves source bbox metadata; verify the "
+              "RTMPose crop adapter uses this field at runtime.")
     if not differences.get("joints", 0) and not differences.get("joints_valid", 0) and not differences.get("joints_vis", 0):
         print("  WARNING: No keypoint coordinate/validity/visibility differences detected.")
 
