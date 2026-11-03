@@ -98,7 +98,7 @@ pack_meta_keys = (
     "birdgaze_crop_offset",
 )
 train_pipeline = [
-    dict(type="LoadImage", to_float32=False),
+    dict(type="BirdGazeLoadImage"),
     dict(type="BirdGazeApplySourceCrop"),
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="RandomFlip", direction="horizontal", prob=0.5),
@@ -111,7 +111,7 @@ train_pipeline = [
     dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 val_pipeline = [
-    dict(type="LoadImage", to_float32=False),
+    dict(type="BirdGazeLoadImage"),
     dict(type="BirdGazeApplySourceCrop"),
     dict(type="GetBBoxCenterScale", padding=1.25),
     dict(type="BirdGazeRestoreSignedScale"),
