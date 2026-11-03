@@ -32,8 +32,9 @@ converted_root = (repo_root / "external_models" / "generated" / scenario).resolv
 assert (dataset_root / "annot" / "train.json").is_file(), f"Missing BirdGaze dataset at {dataset_root}"
 assert (converted_root / "train_coco.json").is_file(), "Run convert_birdgaze_to_coco.py first"
 assert (converted_root / "val_coco.json").is_file(), "Run convert_birdgaze_to_coco.py first"
-with (converted_root / "train_coco.json").open(encoding="utf-8") as source:
-    train_image_count = len(json.load(source)["images"])
+train_image_count = len(json.loads(
+    (converted_root / "train_coco.json").read_text(encoding="utf-8")
+)["images"])
 assert train_image_count > 0, "Empty training annotation export"
 
 # Same keypoint order as existing Bird_HKE: crown, left eye, right eye, beak.
