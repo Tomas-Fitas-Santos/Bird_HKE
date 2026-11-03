@@ -17,21 +17,18 @@ import torch
 import torchvision
 import mmcv
 import mmengine
-import mmdet
 import mmpose
 from mmcv.ops import nms
-from mmdet.models.backbones import CSPNeXt
 from mmpose.models.heads import RTMCCHead
 print("Python:", sys.version.split()[0], sys.executable)
 print("PyTorch:", torch.__version__, "CUDA runtime:", torch.version.cuda)
 print("torchvision:", torchvision.__version__)
 print("MMCV:", mmcv.__version__, "MMEngine:", mmengine.__version__)
-print("MMDetection:", mmdet.__version__, "MMPose:", mmpose.__version__)
+print("MMPose:", mmpose.__version__)
 print("NumPy:", numpy.__version__, "MMCV CUDA operations: import PASS")
 assert torch.__version__.split("+")[0] == "2.1.0", "Expected torch 2.1.0"
 assert torch.version.cuda == "12.1", "Expected PyTorch CUDA 12.1 wheel"
 assert mmcv.__version__ == "2.1.0", "Expected mmcv 2.1.0"
-assert mmdet.__version__ == "3.2.0", "Expected mmdet 3.2.0"
 assert torch.cuda.is_available(), "NVIDIA GPU unavailable"
 for i in range(torch.cuda.device_count()):
     major, minor = torch.cuda.get_device_capability(i)
@@ -104,9 +101,12 @@ else
     pytorch=2.1.0 torchvision=0.16.0 pytorch-cuda=12.1 \
     --override-channels -c pytorch -c nvidia -c defaults
 fi
+# Conda might upgrade NumPy 1.26 to 2.x. The older RTMPose stack
+# requires NumPy 1.26 for binary compatibility.
+"${PY}" -m pip install --no-deps --force-reinstall "numpy==1.26.4"
 # Install the known *binary* CUDA-ops MMCV wheel; no source compilation.
 "${PY}" -m pip install "${MMCV_WHEEL}"
-"${PY}" -m pip install "mmengine==0.10.7" "mmdet==3.2.0" \
+"${PY}" -m pip install "mmengine==0.10.7" \
   "pycocotools" "xtcocotools" "json-tricks" "scipy<1.14" \
   "pyyaml" "pillow" "timm==0.9.16"
 # Pinned MMPose project checkout, installed only in the isolated env.
