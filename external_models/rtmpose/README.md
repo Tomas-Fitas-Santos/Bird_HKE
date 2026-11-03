@@ -117,12 +117,31 @@ the compiled `mmcv/_ext.cpython-310-x86_64-linux-gnu.so` exists and is
 compatibility with the installed Torch 2.7.0; building the file is not proof
 that the CUDA kernels execute.
 
-The latest `--repair` overlays `numpy==1.26.4` inside the RTMPose venv,
-without changing the inherited PyTorch or the base environment, and installs
-the missing small `Cython` / `Pygments` dependencies. It then verifies
-NumPy, direct `xtcocotools._mask` import, MMPose model imports, and an
-actual MMCV NMS CUDA operation. **Do not rerun the long `--build` command
-for this NumPy error.**
+The NumPy repair succeeded on Titan (NumPy 1.26.4 inside the overlay,
+shared PyTorch 2.7.0+cu128 intact). The subsequent import revealed a
+different issue: the pinned MMPose package **unconditionally imports
+`RTMOHead`**, even though the BirdGaze model only uses `RTMCCHead`.
+`RTMOHead` requires MMDetection; MMDetection 3.3.0 explicitly rejects
+MMCV 2.2.0.
+
+The dedicated [MMPose overlay generator](make_overlay.py) copies the pinned
+MMPose Python package to
+`.external_pose_sources/rtmpose_birdgaze_overlay` and removes exactly
+two unused `RTMOHead` import/export statements (four minimal string edits).
+It verifies the upstream source against the pinned Git commit, creates a
+manifest of SHA-256 checksums, keeps an idempotent overlay, and does **not**
+modify the original upstream checkout or any RTMPose-M architecture, codec,
+dataset or loss. `--repair` now regenerates/verifies this overlay before
+its CUDA NMS smoke test.
+
+```bash
+git pull --ff-only origin phase-3-passive-uncertainty
+bash setup_rtmpose_torch27.sh --repair
+```
+
+If this prints `MMCV CUDA operators: PASS`, run the real FD preflight in
+section 3. **Do not rerun the long `--build` command for an MMDetection
+import error.**
 
 The virtualenv is `/home/students/conda-envs/rtmpose-torch27-venv`.
 It inherits the existing Torch 2.7.0+cu128 binary package without modifying
