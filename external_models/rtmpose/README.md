@@ -110,19 +110,19 @@ condition. Pull the latest Phase 3 branch and run:
 bash setup_rtmpose_torch27.sh --repair
 ```
 
-This now installs YAPF's small Python dependencies
-(`importlib-metadata`, `zipp`, `platformdirs` and `tomli`) in the
-RTMPose virtualenv and verifies the actual CUDA NMS operation. The first
-repair attempt encountered another missing YAPF dependency, `platformdirs`,
-because the original setup used `--no-deps`.
+The first two repair attempts exposed missing YAPF dependencies, followed
+by a **NumPy ABI mismatch in `xtcocotools._mask`**. Titan confirmed that
+the compiled `mmcv/_ext.cpython-310-x86_64-linux-gnu.so` exists and is
+23,725,704 bytes. The only remaining uncertainty about it is runtime
+compatibility with the installed Torch 2.7.0; building the file is not proof
+that the CUDA kernels execute.
 
-**Important:** The initial MMCV wheel was only 5.4 MB; this raises the
-possibility that the build did not include a compiled `mmcv._ext` binary.
-The repair script now checks for that extension *before* importing MMCV.
-If it reports `MMCV 2.2.0 is installed WITHOUT mmcv._ext`, inspect
-`external_models/generated/rtmpose_torch27_build.log` for actual
-`mmcv._ext` compilation. Do not repeat the long build until the cause
-is established.
+The latest `--repair` overlays `numpy==1.26.4` inside the RTMPose venv,
+without changing the inherited PyTorch or the base environment, and installs
+the missing small `Cython` / `Pygments` dependencies. It then verifies
+NumPy, direct `xtcocotools._mask` import, MMPose model imports, and an
+actual MMCV NMS CUDA operation. **Do not rerun the long `--build` command
+for this NumPy error.**
 
 The virtualenv is `/home/students/conda-envs/rtmpose-torch27-venv`.
 It inherits the existing Torch 2.7.0+cu128 binary package without modifying
