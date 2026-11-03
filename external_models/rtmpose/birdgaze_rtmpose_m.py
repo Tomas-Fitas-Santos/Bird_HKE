@@ -55,7 +55,10 @@ metainfo = dict(
 # four landmarks and REMOVE pretrained backbone initialization.
 model = dict(
     type="BirdGazeRTMPoseEstimator",
-    backbone=dict(init_cfg=None, norm_cfg=dict(type="BN")),
+    # Pinned MMPose ships an architecture-equivalent CSPNeXt-M backbone.
+    # Avoid pulling MMDetection and its MMCV<2.2 version restriction.
+    backbone=dict(_scope_="mmpose", type="CSPNeXt",
+                  init_cfg=None, norm_cfg=dict(type="BN")),
     head=dict(out_channels=4),
     test_cfg=dict(flip_test=True),
 )
