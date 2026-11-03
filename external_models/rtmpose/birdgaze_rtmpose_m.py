@@ -3,14 +3,17 @@
 Run from the Bird_HKE repository root using the pinned upstream MMPose checkout.
 Set BIRDGAZE_SCENARIO=FD, OS or CS before launching. Separate environment needed.
 """
-import json
-import os
-from pathlib import Path
-
+# MMEngine 0.10.7 distinguishes classic _base_ configs from lazy-import
+# configs by the FIRST matching AST node. Declare _base_ BEFORE imports:
+# otherwise it enters lazy mode and raises ConfigParsingError.
 _base_ = [
     "../../.external_pose_sources/rtmpose/projects/rtmpose/rtmpose/"
     "animal_2d_keypoint/rtmpose-m_8xb64-210e_ap10k-256x256.py"
 ]
+
+import json
+import os
+from pathlib import Path
 custom_imports = dict(
     imports=["external_models.rtmpose.dataset",
              "external_models.rtmpose.model",
