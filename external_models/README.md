@@ -68,3 +68,26 @@ The new RTMPose-M config is a starting integration, not a claim of fully equival
 ### Titan dataset-folder and zero-keypoint handling
 
 The Titan dataset folder is `BirdGaze_v2/BirdGaze_Full_Dataset` for FD, alongside `birdgaze_original_subset` and `birdgaze_corrected_subset`. The converter and RTMPose config use those exact case-sensitive names. BirdGaze images with **zero valid annotated landmarks** remain in the COCO export (reported as `samples_without_valid_keypoints`) and use zero target weights. The custom `BirdGazeCocoDataset` prevents the default COCO loader from discarding such images, matching the existing Bird_HKE loader's sample policy. They contribute no pose supervision; the model loss and validation behavior still need confirmation in the runtime checks.
+
+### FD negative crop scales and OS/CS audit (November 2026)
+
+The full dataset contains at least one recorded negative scale. Bird_HKE accepts
+negative scales, which reverse both crop axes (equivalent to a 180-degree
+rotation). The COCO exporter now uses a positive square bbox plus an explicit
+`birdgaze_negative_scale` flag, and the MMPose dataset/transform restores that
+rotation after augmentation and before `TopdownAffine`. The converter counts
+these samples. Zero or nonfinite scales remain fatal.
+
+Run the read-only audit before continuing:
+
+```bash
+python external_models/audit_birdgaze_annotations.py > external_models/generated/annotation_audit.log 2>&1
+tail -n 100 external_models/generated/annotation_audit.log
+```
+
+**Important:** OS and CS exports on Titan had byte-identical SHA-256 hashes for
+both train and validation, even though source JSON hashes differ. This suggests
+that either metadata-only fields were corrected or the converter currently
+ignores fields relevant to the original Bird_HKE preprocessing (e.g. `bbox`).
+The audit reports exact fields differing. **Do not start the nine baseline
+training runs until the differences are understood and faithfully represented**.
