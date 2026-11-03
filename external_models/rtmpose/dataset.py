@@ -4,6 +4,8 @@ from mmpose.datasets.datasets.body.coco_dataset import CocoDataset
 from mmpose.registry import DATASETS, TRANSFORMS
 from mmcv.transforms import BaseTransform
 from mmpose.datasets.transforms import TopdownAffine
+from mmpose.datasets.transforms.loading import LoadImage
+import cv2
 from external_models.rtmpose.geometry import apply_source_crop
 
 
@@ -118,4 +120,26 @@ class BirdGazeRandomBBoxTransform(BaseTransform):
                     np.random.randn() * 30.0, -60.0, 60.0)
         results["bbox_scale"] = results["bbox_scale"] * factor
         results["bbox_rotation"] = rotation
+        return results
+
+
+
+@TRANSFORMS.register_module()
+class BirdGazeLoadImage(LoadImage):
+    """Match Bird_HKE's cv2.IMREAD_IGNORE_ORIENTATION image decoding.
+
+    Upstream MMPose LoadImage may apply JPEG EXIF orientation, whereas the
+    native Bird_HKE dataset intentionally ignores it. Keep color as BGR here;
+    PoseDataPreprocessor converts BGR to RGB.
+    """
+
+    def transform(self, results):
+        path = results["img_path"]
+        flags = cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
+        img = cv2.imread(path, flags)
+        if img is None:
+            raise FileNotFoundError(f"Could not load BirdGaze image: {path}")
+        results["img"] = img
+        results["img_shape"] = img.shape[:2]
+        results["ori_shape"] = img.shape[:2]
         return results
