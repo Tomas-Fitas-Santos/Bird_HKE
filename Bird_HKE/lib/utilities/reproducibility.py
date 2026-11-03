@@ -188,6 +188,31 @@ def protocol_hash(protocol: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+def validate_resume_protocol(
+    checkpoint: Dict[str, Any], expected_hash: str, strict: bool = True
+) -> None:
+    """Validate checkpoint settings without requiring a specific Git revision.
+
+    Model, optimizer, scheduler and RNG states are validated separately by
+    the training loader. Runtime versions and Git information remain audit-only.
+    """
+    if not strict:
+        return
+    actual_hash = checkpoint.get('training_protocol_hash')
+    if actual_hash is None:
+        raise RuntimeError(
+            'The checkpoint predates the reproducible-training protocol. '
+            'Start a fresh run directory, or set '
+            'REPRODUCIBILITY.STRICT false only for a legacy continuation.'
+        )
+    if actual_hash != expected_hash:
+        raise RuntimeError(
+            'Checkpoint training protocol does not match this run. '
+            f'checkpoint={actual_hash}, current={expected_hash}. '
+            'Use a fresh run directory for a changed experiment.'
+        )
+
+
 def utc_timestamp() -> str:
     """Return an ISO-8601 UTC timestamp suitable for run metadata."""
     return datetime.now(timezone.utc).isoformat()
@@ -243,7 +268,7 @@ def _git_is_dirty() -> Optional[bool]:
 
 
 def resume_environment(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Return environment fields that must stay fixed across strict resume."""
+    """Return a provenance-only environment snapshot (not a resume gate)."""
     return {
         key: report.get(key)
         for key in (
