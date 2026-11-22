@@ -7,7 +7,7 @@ import unittest
 from external_models.remaining_baselines.prepare import (
     BASELINES, SCENARIOS, ensure_under, prepare, reserve,
     validate_exports, validate_os_cs_distinction,
-    validate_standard_vitpose_config,
+    validate_standard_vitpose_config, validate_posebh_upstream_config,
 )
 
 
@@ -122,6 +122,34 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(cfg.adapter_config,
                          "external_models/vitpose/birdgaze_vitpose_b.py")
         self.assertNotIn("vitposepp-b", BASELINES)
+
+    def test_pinned_posebh_moe_prototype_contract(self):
+        config = self.root / "official_posebh_b.py"
+        config.write_text(
+            "num_in_class_proto=3\n"
+            "model=dict(type='TopDownMoEProto',pretrained=None,"
+            "multihead_pretrained=None,"
+            "backbone=dict(type='ViTMoE',depth=12,embed_dim=768,"
+            "num_heads=12,num_expert=6,part_features=192),"
+            "proto_head=dict(type='KptProtoHead',"
+            "extra=dict(num_in_class_proto=num_in_class_proto)))\n",
+            encoding="utf-8",
+        )
+        validate_posebh_upstream_config(config)
+        config.write_text(
+            config.read_text().replace("num_expert=6", "num_expert=3"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "expert count"):
+            validate_posebh_upstream_config(config)
+
+    def test_posebh_registry_points_to_official_moe_config(self):
+        entry = BASELINES["posebh-b"]
+        self.assertEqual(entry.upstream_folder, "posebh")
+        self.assertEqual(entry.run_folder, "PoseBH_B")
+        self.assertTrue(entry.upstream_model_config.endswith("vitb_posebh.py"))
+        self.assertEqual(entry.adapter_config,
+                         "external_models/posebh/birdgaze_posebh_b.py")
 
     def test_registry_contains_only_remaining_models(self):
         self.assertEqual(set(BASELINES), {"vitpose-b", "posebh-b"})
