@@ -49,14 +49,20 @@ A unit test checks both forward output and backward gradient parity against
 
 ## Titan installation (one-time)
 
-From a checkout of the feature branch, **without stopping/changing other
-software**:
+Use a **separate Git worktree** for ViTPose, so you do not switch the branch,
+change dependencies or write outputs in any checkout used by other models:
 
 ```bash
 cd /mnt/storage/TomasSantos/Bird_HKE
 git fetch origin
-git switch feat/isolated-remaining-baselines-20261122
-git pull --ff-only origin feat/isolated-remaining-baselines-20261122
+
+git worktree add -b vitpose-local \
+  /mnt/storage/TomasSantos/Bird_HKE-vitpose \
+  origin/feat/isolated-remaining-baselines-20261122
+
+cd /mnt/storage/TomasSantos/Bird_HKE-vitpose
+# Reuse the original images read-only, without duplicating the dataset.
+ln -s /mnt/storage/TomasSantos/Bird_HKE/BirdGaze_v2 BirdGaze_v2
 
 # Read-only inspection.
 bash setup_vitpose_b.sh --inspect
