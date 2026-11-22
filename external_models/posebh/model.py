@@ -176,6 +176,10 @@ class PoseBHBirdGazeB(nn.Module):
             q /= k
             q /= q.sum(dim=0, keepdim=True).clamp_min(1e-8)
             q /= n
+        # Restore per-sample assignment mass to 1, matching upstream
+        # distributed_sinkhorn()'s final L *= B. Without this, prototype
+        # assignments sum to 1/N and can distort all subclass statistics.
+        q *= n
         return q.T
 
     def prototype_contrast_loss(self, embedding, targets):
