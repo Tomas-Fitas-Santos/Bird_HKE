@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only preflight for ViTPose++-B and PoseBH-B BirdGaze training.
+"""Read-only preflight for standard ViTPose-B and PoseBH-B BirdGaze training.
 
 This is intentionally a preparation step, NOT a training launcher. It creates
 no directories unless --reserve-run is explicitly passed, and never modifies
@@ -8,6 +8,7 @@ Bird_HKE models, upstream checkouts, source datasets or RTMPose artifacts.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -28,12 +29,15 @@ class Baseline(NamedTuple):
     revision: str
     run_folder: str
     adapter_config: str
+    upstream_model_config: str = ""
 
 
 BASELINES = {
-    "vitposepp-b": Baseline(
-        "vitposepp", "c050ed29112da7704797cc1a65af0234b525010d",
-        "ViTPosePP_B", "external_models/vitposepp/birdgaze_vitposepp_b.py"),
+    "vitpose-b": Baseline(
+        "vitpose", "c050ed29112da7704797cc1a65af0234b525010d",
+        "ViTPose_B", "external_models/vitpose/birdgaze_vitpose_b.py",
+        "configs/body/2d_kpt_sview_rgb_img/topdown_heatmap/coco/"
+        "ViTPose_base_simple_coco_256x192.py"),
     "posebh-b": Baseline(
         "posebh", "8f03438f913b559edb0a2beed54e77d1560edba3",
         "PoseBH_B", "external_models/posebh/birdgaze_posebh_b.py"),
@@ -74,6 +78,55 @@ def check_git_pin(repo: Path, expected: str) -> str:
     if dirty:
         raise ValueError(f"Upstream checkout has local modifications: {repo}")
     return revision
+
+
+
+def validate_standard_vitpose_config(path: Path) -> None:
+    """Verify the pinned upstream config is standard ViTPose-B, not ViTPose++.
+
+    Reading the config as AST avoids importing either legacy MMPose or
+    third-party dependencies into the native Bird_HKE environment.
+    """
+    if not path.is_file():
+        raise ValueError(f"Standard ViTPose-B config missing: {path}")
+    parsed = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    definitions = [
+        node.value for node in parsed.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "model"
+                for target in node.targets)
+    ]
+    if len(definitions) != 1:
+        raise ValueError("Upstream ViTPose-B model definition is ambiguous")
+
+    def field(node, name):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "dict":
+            raise ValueError(f"Upstream ViTPose-B expected dict(...) for {name}")
+        for keyword in node.keywords:
+            if keyword.arg == name:
+                return keyword.value
+        raise ValueError(f"Upstream ViTPose-B missing field {name}")
+
+    def constant(node, name):
+        try:
+            return ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(f"Upstream ViTPose-B {name} must be a literal") from exc
+
+    model = definitions[0]
+    backbone = field(model, "backbone")
+    head = field(model, "keypoint_head")
+    expected = (
+        (field(model, "type"), "TopDown", "model type"),
+        (field(backbone, "type"), "ViT", "backbone type"),
+        (field(backbone, "embed_dim"), 768, "embedding dimension"),
+        (field(backbone, "depth"), 12, "depth"),
+        (field(backbone, "num_heads"), 12, "attention heads"),
+        (field(head, "type"), "TopdownHeatmapSimpleHead", "keypoint head"),
+    )
+    for node, value, description in expected:
+        if constant(node, description) != value:
+            raise ValueError(f"Wrong ViTPose-B {description}: expected {value!r}")
 
 
 def validate_exports(dataset: Path, exports: Path) -> dict:
@@ -135,6 +188,8 @@ def prepare(model: str, scenario: str, root: Path = ROOT, dataset_root: Path | N
     upstream = root / ".external_pose_sources" / spec.upstream_folder
     if check_upstream:
         check_git_pin(upstream, spec.revision)
+        if spec.upstream_model_config:
+            validate_standard_vitpose_config(upstream / spec.upstream_model_config)
     evidence = validate_exports(dataset, root / "external_models/generated" / scenario)
     if scenario in ("OS", "CS") and dataset_root is None:
         validate_os_cs_distinction(root)
@@ -151,7 +206,13 @@ def prepare(model: str, scenario: str, root: Path = ROOT, dataset_root: Path | N
         "keypoints": ["crown", "left_eye", "right_eye", "beak_tip"],
         "input_size": [256, 256],
         "init": "random_no_pretrained_weights",
-        "upstream": {"folder": spec.upstream_folder, "revision": spec.revision},
+        "upstream": {"folder": spec.upstream_folder, "revision": spec.revision,
+                     "model_config": spec.upstream_model_config or None,
+                     "model_config_sha256": (
+                         sha256(upstream / spec.upstream_model_config)
+                         if spec.upstream_model_config and
+                         (upstream / spec.upstream_model_config).is_file()
+                         else None)},
         "dataset_root": str(dataset),
         "annotations": evidence,
         "adapter_config": spec.adapter_config,
