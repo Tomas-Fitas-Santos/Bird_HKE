@@ -136,7 +136,11 @@ $VIT_PY -m external_models.vitpose.train --scenario FD --resume
 
 The run directory contains `training_recipe.json`,
 `checkpoint_last.pth`, `model_best.pth`, `training_history.jsonl`,
-and `final_model.pth` after completion. A crash before the first checkpoint
+and `final_model.pth` after completion. The best weights are also
+kept in two alternating integrity-hashed `best_slot_a.pth` /
+`best_slot_b.pth` slots. If a crash interrupts writing a newer best model,
+the prior epoch's best slot remains intact, and `--resume` regenerates the
+canonical `model_best.pth` from the last committed checkpoint. A crash before the first checkpoint
 requires manual investigation and preserving/archiving the failed run; a
 new start will not overwrite it. Training refuses stale live lock files until
 the operator confirms no process is running.
