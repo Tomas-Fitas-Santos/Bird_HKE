@@ -93,6 +93,27 @@ class PoseBHModelTests(unittest.TestCase):
         contrast = model.prototype_contrast_loss(feats, targets)
         self.assertAlmostEqual(float(contrast.detach()), 0.0)
 
+    def test_unlabeled_keypoint_consistency_only_after_epoch_50(self):
+        model = self.make_small()
+        # Entire image has a prototype-consistent pseudo-keypoint, while
+        # all four joints are unsupervised in this synthetic case.
+        prototype = model.prototypes[0, 0].detach()
+        embedding = prototype.view(1, 64, 1, 1).expand(
+            1, 64, 64, 64).clone().requires_grad_(True)
+        proto = model.prototype_heatmaps(embedding)
+        prediction = (proto.detach() + 0.10).clone().requires_grad_(True)
+        target = torch.zeros_like(prediction)
+        missing = torch.zeros(1, 4)
+        before, early = model.loss_parts(prediction, embedding, target,
+                                         missing, epoch=49)
+        after, mature = model.loss_parts(prediction, embedding, target,
+                                        missing, epoch=50)
+        self.assertEqual(float(early["css"].detach()), 0.)
+        self.assertGreater(float(mature["css"].detach()), 0.)
+        after.backward()
+        self.assertIsNotNone(prediction.grad)
+        self.assertGreater(float(prediction.grad.abs().sum()), 0.)
+
     def test_wrong_input_and_proto_shape_fail(self):
         model = self.make_small()
         with self.assertRaises(ValueError):
