@@ -5,10 +5,12 @@ Its dedicated [FD setup, test, train and resume guide](rtmpose/README.md)
 supersedes the earlier RTMPose *initial adapter* notes below. The code is
 committed, but it has **not yet been run on Titan in the isolated MMPose
 environment**. Run the real FD data/GPU preflight before definitive training.
-The standard ViTPose-B architecture, BirdGaze adapter, guarded trainer and
-isolated venv setup are now implemented on the feature branch; **Titan GPU
-validation is still required**. PoseBH-B remains future work. See
-[ViTPose-B training guide](vitpose/README.md).
+The standard ViTPose-B and **single-dataset PoseBH-B adaptation** are now
+implemented on the feature branch, with separate environments, checkpoints,
+read-only BirdGaze data and guarded training. **Titan GPU qualification is
+still required for both**. See the [ViTPose-B guide](vitpose/README.md),
+[PoseBH-B adaptation guide](posebh/README.md), and the sequential no-train
+`bash smoke_both_birdgaze_baselines.sh FD` check.
 
 
 Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
@@ -47,14 +49,14 @@ Use isolated environments for all external architectures. Keep the current Bird_
 1. **BirdGaze adapters.** Use existing FD/OS/CS `annot/train.json` and `annot/val.json` and the corresponding `images/`. Map four landmarks **[crown, left eye, right eye, beak tip]**. Match the existing BirdGaze preprocessing, crops, horizontal flip (swap eyes), and annotation-availability masking. Distinguish missing coordinates from occluded coordinates that are actually annotated.
 2. **RTMPose-M adapter.** Preserve CSPNeXt-M, its GAU/SimCC head, and SimCC loss/decode. Configure four output keypoints and a compatible MMPose dataset interface. Do not force HRNet heatmap loss onto this architecture.
 3. **Standard ViTPose-B adapter.** Use the official single-task ViTPose-B configuration (`ViTPose_base_simple_coco_256x192.py`, pinned upstream revision) as the architecture reference: ViT-B (12 layers, 768 hidden dimensions, 12 heads) with the simple heatmap head. Adapt input resolution to 256×256 and output to BirdGaze's four keypoints, with random initialization and no MAE/pretrained weights. Do not use ViTPose++ multi-task adapters.
-4. **PoseBH-B adaptation.** Verify prototype learning and associated losses remain well-defined with one dataset and four keypoints. The upstream PoseBH training config is multi-dataset and contains freeze/cluster scheduling. Do not claim to benchmark the published full multi-dataset method if these mechanisms cannot be preserved meaningfully.
+4. **PoseBH-B adaptation.** The new adapter preserves the ViTMoE shared/expert path (one active BirdGaze expert), separate regression/prototype heads, four landmarks, three EMA prototypes per landmark and PPCE/PPD losses. The paper's multi-dataset CPS/CSS and pretrained setup are **not** reproduced; the one-dataset unlabeled-keypoint consistency term is explicitly different. Do not present the experiment as the published full multi-dataset PoseBH method.
 5. **Reproducible runners.** Each model×dataset needs a fixed seed 2026, 256×256 input, correctly initialized weights, 100 epoch maximum, run-specific checkpoint directory, validation-only model selection, full model/optimizer/scheduler/RNG checkpoint restoration and a config/annotation fingerprint. Batch and optimizer must be comparable but architecture-specific heads/losses must be preserved.
 6. **Shared predictions/evaluation.** Convert all keypoint predictions to original-image pixel coordinates in the existing BirdGaze keypoint order and use the same evaluation/videos, detector or ground-truth boxes, postprocessing, and metrics. Do not evaluate validation images as an independent test set.
 
-**Readiness:** ViTPose-B has a runnable isolated trainer and source-data
-adapter, but **no verified Titan training run yet**. Its mandatory real-data
-GPU preflight must pass before launching 100 epochs. RTMPose and PoseBH have
-separate readiness states and must not share this trainer.
+**Readiness:** ViTPose-B and PoseBH-B adaptation have separate trainers and
+source-data adapters, but **no verified Titan GPU smoke tests or full runs**.
+Run the two-model sequential smoke script before either 100-epoch job.
+RTMPose has its separate readiness state and environment.
 
 ## Resume-policy update in this branch
 
@@ -83,9 +85,9 @@ The conversion requires Pillow, but not torch, MMPose, or a GPU. It writes outpu
 
 **DO NOT launch RTMPose training yet:** the pinned upstream MMPose/MMDetection/MMCV environment, runtime config loading, actual MMPose forward/backward, and checkpoint-resume protections still need on-cluster validation. The current `(base)` test run skipped most framework tests. Run the existing Bird_HKE tests in its real environment too.
 
-The RTMPose-M integration retains its native SimCC loss. **ViTPose-B is
-implemented separately** in `external_models/vitpose/`; PoseBH-B remains to
-be implemented. Do not run the other models with ViTPose-B's environment.
+The RTMPose-M integration retains its native SimCC loss. **ViTPose-B is implemented** in `external_models/vitpose/`, and **PoseBH-B
+single-dataset adaptation** in `external_models/posebh/`. Keep their
+individual environments, training processes and checkpoints separate.
 
 ### Titan dataset-folder and zero-keypoint handling
 
