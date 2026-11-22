@@ -107,9 +107,11 @@ def decode_image_coordinates(heatmaps: np.ndarray, center: np.ndarray,
     if (k, h, w) != (4, 64, 64):
         raise ValueError("Expected [N,4,64,64] heatmaps")
     xy = np.zeros((b, 4, 2), dtype=np.float32)
-    flat = heatmaps.reshape(b, 4, -1).argmax(axis=-1)
-    xy[..., 0] = flat % w
-    xy[..., 1] = flat // w
+    flattened = heatmaps.reshape(b, 4, -1)
+    flat = flattened.argmax(axis=-1)
+    positive_peak = flattened.max(axis=-1) > 0
+    xy[..., 0] = (flat % w) * positive_peak
+    xy[..., 1] = (flat // w) * positive_peak
     # Same optional quarter-pixel refinement as Bird_HKE, enabled for ViTPose.
     for n in range(b):
         for j in range(k):
