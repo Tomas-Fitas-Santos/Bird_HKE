@@ -40,7 +40,8 @@ BASELINES = {
         "ViTPose_base_simple_coco_256x192.py"),
     "posebh-b": Baseline(
         "posebh", "8f03438f913b559edb0a2beed54e77d1560edba3",
-        "PoseBH_B", "external_models/posebh/birdgaze_posebh_b.py"),
+        "PoseBH_B", "external_models/posebh/birdgaze_posebh_b.py",
+        "configs/body/2d_kpt_sview_rgb_img/topdown_heatmap/mdt/vitb_posebh.py"),
 }
 
 
@@ -130,6 +131,71 @@ def validate_standard_vitpose_config(path: Path) -> None:
             raise ValueError(f"Wrong ViTPose-B {description}: expected {value!r}")
 
 
+
+def validate_posebh_upstream_config(path: Path) -> None:
+    """Verify upstream is the actual PoseBH-B prototype/MoE reference.
+
+    This is a structural AST check only; no external MMPose runtime imports.
+    A single BirdGaze task necessarily reduces the six-expert MoE to one and
+    excludes published cross-dataset CPS/CSS, which is recorded in its recipe.
+    """
+    if not path.is_file():
+        raise ValueError(f"Pinned PoseBH-B reference config missing: {path}")
+    parsed = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    variables = {}
+    for node in parsed.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    variables[target.id] = node.value
+
+    def option(node, name):
+        if not (isinstance(node, ast.Call) and
+                isinstance(node.func, ast.Name) and node.func.id == "dict"):
+            raise ValueError(f"Expected upstream PoseBH dict for {name}")
+        for k in node.keywords:
+            if k.arg == name:
+                return k.value
+        raise ValueError(f"Upstream PoseBH missing {name}")
+
+    def exact(node, value, name):
+        try:
+            actual = ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(f"PoseBH {name} cannot be validated") from exc
+        if actual != value:
+            raise ValueError(f"PoseBH {name} expected {value!r}, got {actual!r}")
+
+    model = variables.get("model")
+    if model is None:
+        raise ValueError("Upstream PoseBH model config missing")
+    backbone = option(model, "backbone")
+    proto = option(model, "proto_head")
+    proto_extra = option(proto, "extra")
+    checks = (
+        (option(model, "type"), "TopDownMoEProto", "model type"),
+        (option(model, "pretrained"), None, "pretrained weights"),
+        (option(model, "multihead_pretrained"), None, "multihead pretrained"),
+        (option(backbone, "type"), "ViTMoE", "backbone type"),
+        (option(backbone, "depth"), 12, "backbone depth"),
+        (option(backbone, "embed_dim"), 768, "embedding dimension"),
+        (option(backbone, "num_heads"), 12, "attention heads"),
+        (option(backbone, "num_expert"), 6, "upstream expert count"),
+        (option(backbone, "part_features"), 192, "expert features"),
+        (option(proto, "type"), "KptProtoHead", "prototype head type"),
+        (variables.get("num_in_class_proto"), 3, "prototypes per joint"),
+    )
+    for node, value, name in checks:
+        if node is None:
+            raise ValueError(f"PoseBH {name} missing")
+        exact(node, value, name)
+    # Ensure the extra config binds the prototype count rather than hardcoding
+    # a different unsupported value.
+    param = option(proto_extra, "num_in_class_proto")
+    if not isinstance(param, ast.Name) or param.id != "num_in_class_proto":
+        raise ValueError("PoseBH prototype count binding changed")
+
+
 def validate_exports(dataset: Path, exports: Path) -> dict:
     """Confirm converted records preserve the existing BirdGaze data contract."""
     evidence = {}
@@ -189,8 +255,10 @@ def prepare(model: str, scenario: str, root: Path = ROOT, dataset_root: Path | N
     upstream = root / ".external_pose_sources" / spec.upstream_folder
     if check_upstream:
         check_git_pin(upstream, spec.revision)
-        if spec.upstream_model_config:
+        if model == "vitpose-b":
             validate_standard_vitpose_config(upstream / spec.upstream_model_config)
+        elif model == "posebh-b":
+            validate_posebh_upstream_config(upstream / spec.upstream_model_config)
     evidence = validate_exports(dataset, root / "external_models/generated" / scenario)
     if scenario in ("OS", "CS") and dataset_root is None:
         validate_os_cs_distinction(root)
