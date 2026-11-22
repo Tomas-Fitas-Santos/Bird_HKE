@@ -1,4 +1,4 @@
-# Isolated training preparation: ViTPose++-B and PoseBH-B
+# Isolated training preparation: ViTPose-B and PoseBH-B
 
 This folder starts integrating the **two remaining external architectures**
 identified in `external_models/README.md`. It does **not** change or train the
@@ -7,8 +7,9 @@ six native Bird_HKE models, RTMPose-M, or the existing uncertainty pipeline.
 ## Scope and isolation contract
 
 - Two pinned, clean upstream source checkouts:
-  - ViTPose++-B: `.external_pose_sources/vitposepp` at
-    `c050ed29112da7704797cc1a65af0234b525010d`
+  - ViTPose-B: `.external_pose_sources/vitpose` at
+    `c050ed29112da7704797cc1a65af0234b525010d`. The official single-task
+    reference config is `configs/body/2d_kpt_sview_rgb_img/topdown_heatmap/coco/ViTPose_base_simple_coco_256x192.py`.
   - PoseBH-B: `.external_pose_sources/posebh` at
     `8f03438f913b559edb0a2beed54e77d1560edba3`
 - Keep **separate Python environments** for each architecture. Neither upstream
@@ -18,7 +19,7 @@ six native Bird_HKE models, RTMPose-M, or the existing uncertainty pipeline.
 - Four landmarks in order: crown, left eye, right eye, beak tip.
   Input 256×256, seed 2026, 100 epochs maximum, from-scratch training.
 - Separate new output prefixes only:
-  - `Bird_HKE/trained_models/External_Baselines/ViTPosePP_B/{FD,OS,CS}/seed_2026/`
+  - `Bird_HKE/trained_models/External_Baselines/ViTPose_B/{FD,OS,CS}/seed_2026/`
   - `Bird_HKE/trained_models/External_Baselines/PoseBH_B/{FD,OS,CS}/seed_2026/`
 - Never reuse native weights, RTMPose output paths, calibration artifacts,
   checkpoint manifests, training processes or shared environment packages.
@@ -33,7 +34,7 @@ branch, after fetching pinned external sources and generating COCO exports:
 ```bash
 python -m unittest discover -s tests -p 'test_remaining_baseline_preflight.py' -v
 
-python -m external_models.remaining_baselines.prepare --model vitposepp-b --scenario FD
+python -m external_models.remaining_baselines.prepare --model vitpose-b --scenario FD
 python -m external_models.remaining_baselines.prepare --model posebh-b --scenario FD
 ```
 
@@ -43,6 +44,11 @@ exports) is an error, not an acceptable result.
 
 The preflight is read-only; it confirms pinned clean upstream source revisions,
 source/export counts, four-keypoint record shapes, crop metadata and checksums.
+For ViTPose-B it also statically checks the official single-task ViT-B backbone
+(768 embedding, 12 layers, 12 attention heads, simple heatmap head).
+Training will use BirdGaze-specific 256×256 input rather than the reference
+COCO config's 256×192. The adaptation must keep the ViTPose-B architecture
+while updating input/positional embedding handling and the four output joints.
 The output is a per-model data/config recipe. It does **not** import MMPose or
 instantiate/train any model, so it does not touch an ongoing GPU run.
 
@@ -52,7 +58,7 @@ instantiate/train any model, so it does not touch an ongoing GPU run.
 forward/backward + validation GPU smoke test must be implemented before
 training is enabled. The planned local paths are:
 
-- `external_models/vitposepp/birdgaze_vitposepp_b.py`
+- `external_models/vitpose/birdgaze_vitpose_b.py`
 - `external_models/posebh/birdgaze_posebh_b.py`
 
 The optional `--reserve-run` mode will only reserve a brand-new output
@@ -63,8 +69,9 @@ no `--train` mode or command that launches an unadapted upstream trainer.
 
 ### Remaining implementation tasks
 
-1. Implement ViTPose++-B native backbone/head and four-keypoint BirdGaze
-   dataset wrapper **without silently treating ViTPose-B as ViTPose++-B**.
+1. Adapt the official **standard, single-task ViTPose-B** backbone and heatmap
+   head to four BirdGaze keypoints. Do not use any ViTPose++ multi-task
+   adapters or pretrained MAE weights.
 2. Adapt PoseBH-B prototype learning to the four-keypoint single-dataset
    setting; check the paper's multi-dataset self-supervision and scheduling
    assumptions before claiming an equivalent architecture.
