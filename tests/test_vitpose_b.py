@@ -14,7 +14,10 @@ try:
         decode_image_coordinates, gaussian_targets,
     )
     from external_models.vitpose.model import ViTPoseB, masked_heatmap_mse
-    from external_models.vitpose.train import lr_multiplier, require_idle_gpu
+    from external_models.vitpose.train import (
+        lr_multiplier, require_idle_gpu, refresh_best_alias,
+    )
+    from external_models.remaining_baselines.prepare import sha256
     HAS_DEPS = True
 except ImportError:
     HAS_DEPS = False
@@ -152,6 +155,28 @@ class ViTPoseProtocolTests(unittest.TestCase):
                    return_value=CompletedProcess([], 0, stdout="284\n", stderr="")):
             with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
                 require_idle_gpu()
+
+    def test_best_checkpoint_recovery_keeps_previous_slot(self):
+        work = Path(tempfile.mkdtemp(prefix="vitpose-best-slots-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(work))
+        first = work / "best_slot_a.pth"
+        second = work / "best_slot_b.pth"
+        first.write_bytes(b"previous committed best")
+        a_digest = sha256(first)
+        refresh_best_alias(work, first.name, a_digest)
+        self.assertEqual((work / "model_best.pth").read_bytes(),
+                         b"previous committed best")
+        # New best slot is prepared, then the process crashes BEFORE writing
+        # checkpoint_last. The old slot remains available for exact recovery.
+        second.write_bytes(b"new best not yet committed")
+        refresh_best_alias(work, first.name, a_digest)
+        self.assertEqual((work / "model_best.pth").read_bytes(),
+                         b"previous committed best")
+        refresh_best_alias(work, second.name, sha256(second))
+        self.assertEqual((work / "model_best.pth").read_bytes(),
+                         b"new best not yet committed")
+        with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+            refresh_best_alias(work, first.name, "bad")
 
     def test_loss_masks_occluded_with_coordinates(self):
         p = torch.zeros((1, 4, 64, 64), requires_grad=True)
