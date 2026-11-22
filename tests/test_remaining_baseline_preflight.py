@@ -95,7 +95,7 @@ class IsolationTests(unittest.TestCase):
         upstream.write_text(
             "model = dict(type='TopDown', "
             "backbone=dict(type='ViT', embed_dim=768, depth=12, num_heads=12), "
-            "keypoint_head=dict(type='TopdownHeatmapSimpleHead'))\\n",
+            "keypoint_head=dict(type='TopdownHeatmapSimpleHead'))\n",
             encoding="utf-8",
         )
         validate_standard_vitpose_config(upstream)
