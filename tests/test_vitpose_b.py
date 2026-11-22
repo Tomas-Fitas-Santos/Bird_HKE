@@ -15,7 +15,7 @@ try:
     )
     from external_models.vitpose.model import ViTPoseB, masked_heatmap_mse
     from external_models.vitpose.train import (
-        lr_multiplier, require_idle_gpu, refresh_best_alias,
+        lr_multiplier, require_idle_gpu, refresh_best_alias, recover_history,
     )
     from external_models.remaining_baselines.prepare import sha256
     HAS_DEPS = True
@@ -177,6 +177,20 @@ class ViTPoseProtocolTests(unittest.TestCase):
                          b"new best not yet committed")
         with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
             refresh_best_alias(work, first.name, "bad")
+
+    def test_interrupted_epoch_metric_history_recovery(self):
+        with tempfile.TemporaryDirectory(prefix="vitpose-history-") as d:
+            path = Path(d) / "training_history.jsonl"
+            one = {"epoch": 1, "val_pck_005": 0.1}
+            two = {"epoch": 2, "val_pck_005": 0.2}
+            path.write_text(json.dumps(one) + "\n", encoding="utf-8")
+            recover_history(Path(d), 2, two)
+            lines = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(lines, [one, two])
+            recover_history(Path(d), 2, two)
+            self.assertEqual(len(path.read_text().splitlines()), 2)
+            with self.assertRaisesRegex(RuntimeError, "disagrees"):
+                recover_history(Path(d), 2, {"epoch": 2, "val_pck_005": 9.})
 
     def test_loss_masks_occluded_with_coordinates(self):
         p = torch.zeros((1, 4, 64, 64), requires_grad=True)
