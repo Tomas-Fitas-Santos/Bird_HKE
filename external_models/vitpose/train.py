@@ -355,6 +355,8 @@ def gpu_smoke(dataset, validation_dataset):
     """Disposable forward/backward/optimizer step with actual BirdGaze data."""
     print("ViTPose-B real-data GPU preflight (no writes)...", flush=True)
     set_determinism()
+    torch.cuda.reset_peak_memory_stats()
+    smoke_start = time.perf_counter()
     model = ViTPoseB().cuda()
     optim = make_optimizer(model)
     scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -395,6 +397,10 @@ def gpu_smoke(dataset, validation_dataset):
     print(f"GPU preflight PASS; model={sum(p.numel() for p in model.parameters()):,} "
           f"parameters, first loss={loss.item():.7f}", flush=True)
     del model, optim, scaler, sample, output, loss, validation, test_output, test_xy
+    peak_mib = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    elapsed = time.perf_counter() - smoke_start
+    print(f"GPU smoke resource profile: peak_allocated_mib={peak_mib:.1f} "
+          f"elapsed_s={elapsed:.2f}", flush=True)
     torch.cuda.empty_cache()
 
 
