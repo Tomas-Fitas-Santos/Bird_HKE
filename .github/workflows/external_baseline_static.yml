@@ -1,0 +1,40 @@
+name: External pose baselines - syntax and isolation
+
+on:
+  push:
+    branches:
+      - feat/isolated-remaining-baselines-20261122
+    paths:
+      - external_models/**
+      - tests/test_posebh_b.py
+      - tests/test_vitpose_b.py
+      - tests/test_remaining_baseline_preflight.py
+      - setup_posebh_b.sh
+      - setup_vitpose_b.sh
+      - smoke_both_birdgaze_baselines.sh
+      - .github/workflows/external_baseline_static.yml
+  pull_request:
+    branches:
+      - phase-3-passive-uncertainty
+
+jobs:
+  static-preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Syntax-compile both training stacks
+        run: |
+          python -m compileall -q external_models/vitpose external_models/posebh external_models/remaining_baselines
+          python -m py_compile tests/test_vitpose_b.py tests/test_posebh_b.py tests/test_remaining_baseline_preflight.py
+      - name: Validate shell scripts
+        run: |
+          bash -n setup_vitpose_b.sh
+          bash -n setup_posebh_b.sh
+          bash -n smoke_both_birdgaze_baselines.sh
+      - name: Test read-only isolation preflight with synthetic data
+        run: python -m unittest discover -s tests -p 'test_remaining_baseline_preflight.py' -v
