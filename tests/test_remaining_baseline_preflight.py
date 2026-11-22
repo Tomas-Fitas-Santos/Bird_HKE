@@ -7,6 +7,7 @@ import unittest
 from external_models.remaining_baselines.prepare import (
     BASELINES, SCENARIOS, ensure_under, prepare, reserve,
     validate_exports, validate_os_cs_distinction,
+    validate_standard_vitpose_config,
 )
 
 
@@ -36,7 +37,7 @@ class IsolationTests(unittest.TestCase):
 
     def test_two_models_have_distinct_run_roots(self):
         self.data()
-        a, m1 = prepare("vitposepp-b", "FD", self.root, check_upstream=False)
+        a, m1 = prepare("vitpose-b", "FD", self.root, check_upstream=False)
         b, m2 = prepare("posebh-b", "FD", self.root, check_upstream=False)
         self.assertNotEqual(a, b)
         self.assertFalse(a.exists())
@@ -54,7 +55,7 @@ class IsolationTests(unittest.TestCase):
 
     def test_refuses_overwriting_even_with_adapters(self):
         self.data()
-        run, manifest = prepare("vitposepp-b", "FD", self.root, check_upstream=False)
+        run, manifest = prepare("vitpose-b", "FD", self.root, check_upstream=False)
         manifest["training_ready"] = True
         recipe = reserve(run, manifest, self.root)
         before = recipe.read_bytes()
@@ -89,8 +90,34 @@ class IsolationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "COCO exports match"):
             validate_os_cs_distinction(self.root)
 
+    def test_standard_vitpose_architecture_guard(self):
+        upstream = self.root / "official_vitpose_b.py"
+        upstream.write_text(
+            "model = dict(type='TopDown', "
+            "backbone=dict(type='ViT', embed_dim=768, depth=12, num_heads=12), "
+            "keypoint_head=dict(type='TopdownHeatmapSimpleHead'))\\n",
+            encoding="utf-8",
+        )
+        validate_standard_vitpose_config(upstream)
+        upstream.write_text(
+            upstream.read_text().replace("depth=12", "depth=24"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "Wrong ViTPose-B depth"):
+            validate_standard_vitpose_config(upstream)
+
+    def test_standard_vitpose_contract_points_to_official_single_task_config(self):
+        cfg = BASELINES["vitpose-b"]
+        self.assertEqual(cfg.run_folder, "ViTPose_B")
+        self.assertEqual(cfg.upstream_folder, "vitpose")
+        self.assertTrue(cfg.upstream_model_config.endswith(
+            "ViTPose_base_simple_coco_256x192.py"))
+        self.assertEqual(cfg.adapter_config,
+                         "external_models/vitpose/birdgaze_vitpose_b.py")
+        self.assertNotIn("vitposepp-b", BASELINES)
+
     def test_registry_contains_only_remaining_models(self):
-        self.assertEqual(set(BASELINES), {"vitposepp-b", "posebh-b"})
+        self.assertEqual(set(BASELINES), {"vitpose-b", "posebh-b"})
 
 
 if __name__ == "__main__":
