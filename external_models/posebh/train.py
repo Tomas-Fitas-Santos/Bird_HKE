@@ -367,6 +367,8 @@ def gpu_smoke(dataset, validation_dataset):
     """Disposable real-BirdGaze GPU train and prototype/validation check."""
     print("PoseBH-B adaptation GPU smoke test (no writes)...", flush=True)
     set_determinism()
+    torch.cuda.reset_peak_memory_stats()
+    smoke_start = time.perf_counter()
     model = PoseBHBirdGazeB().cuda()
     optimizer = make_optimizer(model)
     scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -415,6 +417,10 @@ def gpu_smoke(dataset, validation_dataset):
           f"loss={loss.item():.8f} proto_ema_moved="
           f"{bool((model.prototypes != before).any())}", flush=True)
     del model, optimizer, scaler, hm, emb, loss, parts, val_pred
+    peak_mib = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    elapsed = time.perf_counter() - smoke_start
+    print(f"GPU smoke resource profile: peak_allocated_mib={peak_mib:.1f} "
+          f"elapsed_s={elapsed:.2f}", flush=True)
     torch.cuda.empty_cache()
 
 
