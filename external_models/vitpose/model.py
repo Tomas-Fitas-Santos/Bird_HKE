@@ -67,6 +67,39 @@ class Block(nn.Module):
         return x + self.drop_path(self.mlp(self.norm2(x)))
 
 
+
+def bilinear_weights(source_size: int, scale: int = 4) -> torch.Tensor:
+    """Separable interpolation weights identical to align_corners=False.
+
+    CUDA native upsample_bilinear2d_backward may be nondeterministic in some
+    supported PyTorch versions. The two GEMMs below preserve bilinear values
+    but use deterministic matrix-multiplication backward with cuBLAS workspace.
+    """
+    destination = source_size * scale
+    source_coordinates = (
+        (torch.arange(destination, dtype=torch.float32) + 0.5) / scale - 0.5
+    )
+    low = source_coordinates.floor().to(torch.long)
+    high = low + 1
+    alpha = source_coordinates - low
+    low = low.clamp(0, source_size - 1)
+    high = high.clamp(0, source_size - 1)
+    weights = torch.zeros(destination, source_size, dtype=torch.float32)
+    rows = torch.arange(destination)
+    weights.index_put_((rows, low), 1.0 - alpha, accumulate=True)
+    weights.index_put_((rows, high), alpha, accumulate=True)
+    return weights
+
+
+def deterministic_bilinear_4x(x, weights=None):
+    """Same 4x bilinear upsampling as F.interpolate; deterministic CUDA grads."""
+    if x.ndim != 4 or x.shape[-2:] != (16, 16):
+        raise ValueError("ViTPose-B bilinear head expects 16x16 patch features")
+    w = (bilinear_weights(16) if weights is None else weights).to(
+        device=x.device, dtype=x.dtype)
+    return torch.matmul(torch.matmul(w, x), w.transpose(0, 1))
+
+
 class ViTPoseB(nn.Module):
     """Matches official single-task ViTPose-B ViT plus zero-deconv simple head.
 
@@ -97,6 +130,8 @@ class ViTPoseB(nn.Module):
         ])
         self.last_norm = nn.LayerNorm(dim, eps=1e-6)
         self.final_layer = nn.Conv2d(dim, keypoints, 3, padding=1)
+        self.register_buffer("_upsample4_weights", bilinear_weights(16),
+                             persistent=False)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -123,8 +158,7 @@ class ViTPoseB(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.last_norm(x).transpose(1, 2).reshape(b, -1, h, w)
-        x = F.interpolate(F.relu(x), scale_factor=4, mode="bilinear",
-                          align_corners=False)
+        x = deterministic_bilinear_4x(F.relu(x), self._upsample4_weights)
         return self.final_layer(x)
 
 
