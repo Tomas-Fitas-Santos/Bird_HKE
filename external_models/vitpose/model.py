@@ -163,11 +163,15 @@ class ViTPoseB(nn.Module):
 
 
 def masked_heatmap_mse(prediction, target, valid):
-    """Native BirdGaze joint-weighted MSE with zero gradients for empty masks."""
+    """Official ViTPose JointsMSELoss with binary BirdGaze coordinate weights.
+
+This is *not* the modified focal-weighted MSE in native Bird_HKE;
+architecture-specific ViTPose heatmap supervision is preserved.
+    """
     if prediction.shape != target.shape or prediction.shape[1] != 4:
         raise ValueError("Expected matching [N,4,64,64] heatmaps")
     if valid.shape != prediction.shape[:2]:
         raise ValueError("Expected [N,4] coordinate supervision mask")
-    # Same per-joint mean heatmap squared error as JointsMSELoss.
+    # Same per-joint mean squared heatmap error as official ViTPose JointsMSELoss.
     sq = (prediction - target).square().mean(dim=(-1, -2))
     return (sq * valid.to(sq.dtype)).sum() / (prediction.shape[0] * 4)
