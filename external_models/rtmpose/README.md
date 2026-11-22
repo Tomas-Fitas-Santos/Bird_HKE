@@ -312,7 +312,7 @@ inherited AP-10K evaluator's unsupported `ann_file` key. That configuration
 is now corrected; the expanded GPU preflight and actual 100-epoch training
 must still be rerun and validated on Titan.
 
-ViTPose++-B and PoseBH-B remain to be integrated next; neither is trained
+ViTPose-B and PoseBH-B remain to be integrated next; neither is trained
 by this RTMPose launcher. Once all FD models have trained, use the same
 independently annotated video benchmark and consistent detection/cropping
 to compare all architectures.
