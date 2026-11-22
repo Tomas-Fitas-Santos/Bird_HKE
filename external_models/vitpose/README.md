@@ -16,6 +16,11 @@ architecture: 256×256 top-down crops, four keypoints
 `[crown,left_eye,right_eye,beak_tip]`, 64×64 Gaussian heatmaps, and
 four-channel output. The official code's learned positional token slot and
 its 4× ReLU/bilinear/simple-convolution head are preserved.
+The 4× bilinear interpolation uses equivalent **separable matrix multiplications**
+instead of CUDA's native bilinear-backward kernel to support strict deterministic
+training on PyTorch/CUDA versions where that kernel is nondeterministic.
+A unit test checks both forward output and backward gradient parity against
+`torch.nn.functional.interpolate(..., mode="bilinear", align_corners=False)`.
 
 ## Safety and reproducibility
 
