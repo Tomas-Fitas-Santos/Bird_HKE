@@ -93,7 +93,7 @@ class IsolationTests(unittest.TestCase):
     def test_standard_vitpose_architecture_guard(self):
         upstream = self.root / "official_vitpose_b.py"
         upstream.write_text(
-            "model = dict(type='TopDown', "
+            "model = dict(type='TopDown', pretrained=None, "
             "backbone=dict(type='ViT', embed_dim=768, depth=12, num_heads=12), "
             "keypoint_head=dict(type='TopdownHeatmapSimpleHead'))\n",
             encoding="utf-8",
@@ -104,6 +104,13 @@ class IsolationTests(unittest.TestCase):
             encoding="utf-8",
         )
         with self.assertRaisesRegex(ValueError, "Wrong ViTPose-B depth"):
+            validate_standard_vitpose_config(upstream)
+        upstream.write_text(
+            upstream.read_text().replace("depth=24", "depth=12")
+            .replace("pretrained=None", "pretrained='old_checkpoint.pth'"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "Wrong ViTPose-B pretrained weights"):
             validate_standard_vitpose_config(upstream)
 
     def test_standard_vitpose_contract_points_to_official_single_task_config(self):
