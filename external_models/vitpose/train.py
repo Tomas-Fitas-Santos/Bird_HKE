@@ -203,6 +203,36 @@ def save_atomic(payload, path):
 
 
 
+def recover_history(run_dir, committed_epoch, committed_metrics):
+    """Repair an interrupted append after checkpoint_last was atomically saved.
+
+    Only the single committed metric row may be appended. Refuse malformed,
+    duplicate, or inconsistent history instead of inventing measurements.
+    """
+    path = run_dir / "training_history.jsonl"
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    epochs = [int(row["epoch"]) for row in rows]
+    if epochs != list(range(1, len(epochs) + 1)):
+        raise RuntimeError("Training history contains gaps or duplicate epochs")
+    if len(epochs) > committed_epoch:
+        raise RuntimeError("History extends past the committed checkpoint")
+    if len(epochs) == committed_epoch:
+        if rows[-1] != committed_metrics:
+            raise RuntimeError("Training history disagrees with last checkpoint")
+        return
+    if len(epochs) == committed_epoch - 1 and committed_metrics is not None:
+        if committed_metrics.get("epoch") != committed_epoch:
+            raise RuntimeError("Checkpoint metric row has incorrect epoch")
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(committed_metrics, sort_keys=True) + "\\n")
+        return
+    raise RuntimeError("Training history cannot be safely recovered")
+
+
 def refresh_best_alias(run_dir, slot, digest):
     """Keep canonical best checkpoint synchronized with committed epoch state.
 
@@ -434,6 +464,7 @@ def run(scenario, mode):
             if not isinstance(best_digest, str):
                 raise RuntimeError("Checkpoint missing best-checkpoint integrity hash")
             refresh_best_alias(run_dir, best_slot, best_digest)
+            recover_history(run_dir, begin_epoch, state.get("metrics"))
             restore_rng(state["rng"])
             print(f"Restored full training state at epoch {begin_epoch}", flush=True)
 
@@ -476,6 +507,7 @@ def run(scenario, mode):
                 "best_pck": best,
                 "best_slot": best_slot,
                 "best_sha256": best_digest,
+                "metrics": metrics,
             }
             save_atomic(checkpoint, run_dir / "checkpoint_last.pth")
             if best_updated:
