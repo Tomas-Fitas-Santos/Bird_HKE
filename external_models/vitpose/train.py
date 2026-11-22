@@ -228,7 +228,7 @@ def recover_history(run_dir, committed_epoch, committed_metrics):
         if committed_metrics.get("epoch") != committed_epoch:
             raise RuntimeError("Checkpoint metric row has incorrect epoch")
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(committed_metrics, sort_keys=True) + "\\n")
+            stream.write(json.dumps(committed_metrics, sort_keys=True) + "\n")
         return
     raise RuntimeError("Training history cannot be safely recovered")
 
