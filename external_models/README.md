@@ -5,7 +5,10 @@ Its dedicated [FD setup, test, train and resume guide](rtmpose/README.md)
 supersedes the earlier RTMPose *initial adapter* notes below. The code is
 committed, but it has **not yet been run on Titan in the isolated MMPose
 environment**. Run the real FD data/GPU preflight before definitive training.
-ViTPose-B and PoseBH-B remain the next architectures to integrate.
+The standard ViTPose-B architecture, BirdGaze adapter, guarded trainer and
+isolated venv setup are now implemented on the feature branch; **Titan GPU
+validation is still required**. PoseBH-B remains future work. See
+[ViTPose-B training guide](vitpose/README.md).
 
 
 Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
@@ -19,7 +22,10 @@ git pull --ff-only origin phase-3-passive-uncertainty
 bash setup_external_pose_sources.sh
 ```
 
-The sources are cloned to `.external_pose_sources/`, which is Git-ignored. The upstream commit IDs are pinned in the script, avoiding silent updates:
+The sources are cloned to `.external_pose_sources/`, which is Git-ignored.
+For **ViTPose-B only**, use `bash setup_vitpose_b.sh --sources` to fetch
+its pinned checkout without touching RTMPose/PoseBH. The general acquisition
+script still exists for the broader research campaign:
 
 | Baseline | Upstream | Pinned Git commit |
 |---|---|---|
@@ -31,7 +37,10 @@ Preserve upstream copyright/LICENSE when selectively importing any source. Do no
 
 ## Do not mix third-party MMPose installations into the current Bird_HKE environment
 
-RTMPose targets modern MMPose/MMEngine, whereas standard ViTPose and PoseBH use older forked MMPose implementations. Use isolated environments for the upstream implementations. Keep the current Bird_HKE PyTorch/CUDA environment unchanged, including active runs.
+RTMPose targets modern MMPose/MMEngine, whereas PoseBH uses an older MMPose
+fork. Standard ViTPose-B now runs through its independent faithful
+PyTorch backbone/heatmap adapter; no conflicting MMPose installation is needed.
+Use isolated environments for all external architectures. Keep the current Bird_HKE PyTorch/CUDA environment unchanged, including active runs.
 
 ## Work required before launching the nine training jobs
 
@@ -42,7 +51,10 @@ RTMPose targets modern MMPose/MMEngine, whereas standard ViTPose and PoseBH use 
 5. **Reproducible runners.** Each model×dataset needs a fixed seed 2026, 256×256 input, correctly initialized weights, 100 epoch maximum, run-specific checkpoint directory, validation-only model selection, full model/optimizer/scheduler/RNG checkpoint restoration and a config/annotation fingerprint. Batch and optimizer must be comparable but architecture-specific heads/losses must be preserved.
 6. **Shared predictions/evaluation.** Convert all keypoint predictions to original-image pixel coordinates in the existing BirdGaze keypoint order and use the same evaluation/videos, detector or ground-truth boxes, postprocessing, and metrics. Do not evaluate validation images as an independent test set.
 
-**Readiness:** the source acquisition script only downloads pinned upstream source. Training configurations and adapters above are still required; do not treat the downloaded models as runnable BirdGaze experiments.
+**Readiness:** ViTPose-B has a runnable isolated trainer and source-data
+adapter, but **no verified Titan training run yet**. Its mandatory real-data
+GPU preflight must pass before launching 100 epochs. RTMPose and PoseBH have
+separate readiness states and must not share this trainer.
 
 ## Resume-policy update in this branch
 
@@ -71,7 +83,9 @@ The conversion requires Pillow, but not torch, MMPose, or a GPU. It writes outpu
 
 **DO NOT launch RTMPose training yet:** the pinned upstream MMPose/MMDetection/MMCV environment, runtime config loading, actual MMPose forward/backward, and checkpoint-resume protections still need on-cluster validation. The current `(base)` test run skipped most framework tests. Run the existing Bird_HKE tests in its real environment too.
 
-The new RTMPose-M config is a starting integration, not a claim of fully equivalent augmentation across frameworks; the native RTMPose SimCC loss is preserved. ViTPose-B and PoseBH-B adapters remain to be implemented.
+The RTMPose-M integration retains its native SimCC loss. **ViTPose-B is
+implemented separately** in `external_models/vitpose/`; PoseBH-B remains to
+be implemented. Do not run the other models with ViTPose-B's environment.
 
 ### Titan dataset-folder and zero-keypoint handling
 
