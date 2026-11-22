@@ -13,7 +13,9 @@ try:
         BirdGazeViTPoseDataset, affine_matrix, coordinate_valid,
         decode_image_coordinates, gaussian_targets,
     )
-    from external_models.vitpose.model import ViTPoseB, masked_heatmap_mse
+    from external_models.vitpose.model import (
+        ViTPoseB, masked_heatmap_mse, deterministic_bilinear_4x,
+    )
     from external_models.vitpose.train import (
         lr_multiplier, require_idle_gpu, refresh_best_alias, recover_history,
     )
@@ -50,6 +52,20 @@ class ViTPoseBModelTests(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(model.patch_embed.proj.weight.grad).all())
         self.assertTrue(torch.isfinite(model.final_layer.weight.grad).all())
+
+    def test_deterministic_bilinear_matches_reference_and_gradient(self):
+        import torch.nn.functional as F
+        torch.manual_seed(2026)
+        x = torch.randn(1, 6, 16, 16, requires_grad=True)
+        reference = F.interpolate(x, scale_factor=4, mode="bilinear",
+                                  align_corners=False)
+        adapted = deterministic_bilinear_4x(x)
+        torch.testing.assert_close(adapted, reference, atol=2e-6, rtol=2e-6)
+        reference.sum().backward(retain_graph=True)
+        native_grad = x.grad.detach().clone()
+        x.grad.zero_()
+        adapted.sum().backward()
+        torch.testing.assert_close(x.grad, native_grad, atol=2e-5, rtol=2e-5)
 
     def test_no_supervision_zero_loss_and_zero_gradients(self):
         model = ViTPoseB(dim=48, depth=1, heads=3, drop_path_rate=0)
