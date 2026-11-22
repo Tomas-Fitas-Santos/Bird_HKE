@@ -24,6 +24,7 @@ import json
 import math
 from pathlib import Path
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -197,6 +198,29 @@ def save_atomic(payload, path):
     try:
         torch.save(payload, tmp)
         os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+
+def refresh_best_alias(run_dir, slot, digest):
+    """Keep canonical best checkpoint synchronized with committed epoch state.
+
+    Alternating immutable-per-epoch best slots mean an interrupted checkpoint
+    write cannot destroy the best state referenced by the preceding checkpoint.
+    """
+    if slot not in ("best_slot_a.pth", "best_slot_b.pth"):
+        raise RuntimeError(f"Invalid best slot in checkpoint: {slot!r}")
+    source = run_dir / slot
+    if not source.is_file() or sha256(source) != digest:
+        raise RuntimeError("Recorded best checkpoint hash mismatch; refusing resume")
+    target = run_dir / "model_best.pth"
+    if target.is_file() and sha256(target) == digest:
+        return
+    tmp = run_dir / f".model_best.pth.{os.getpid()}.tmp"
+    try:
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -387,6 +411,8 @@ def run(scenario, mode):
         scaler = torch.amp.GradScaler("cuda", enabled=True)
         begin_epoch = 0
         best = -float("inf")
+        best_slot = None
+        best_digest = None
         if mode == "resume":
             # This pickle file is generated only by our own training process,
             # inside the locked dedicated run directory. Never load arbitrary
@@ -403,6 +429,11 @@ def run(scenario, mode):
             scheduler.load_state_dict(state["scheduler"])
             scaler.load_state_dict(state["grad_scaler"])
             best = float(state["best_pck"])
+            best_slot = state.get("best_slot")
+            best_digest = state.get("best_sha256")
+            if not isinstance(best_digest, str):
+                raise RuntimeError("Checkpoint missing best-checkpoint integrity hash")
+            refresh_best_alias(run_dir, best_slot, best_digest)
             restore_rng(state["rng"])
             print(f"Restored full training state at epoch {begin_epoch}", flush=True)
 
@@ -424,6 +455,14 @@ def run(scenario, mode):
                 "peak_cuda_memory_mib": round(
                     torch.cuda.max_memory_allocated() / 1024 ** 2, 1),
             }
+            # Write the next best state into the INACTIVE slot first. If the
+            # process dies before the new last checkpoint is committed, the
+            # previous epoch checkpoint and its active best slot stay valid.
+            if best_updated:
+                best_slot = ("best_slot_b.pth" if best_slot == "best_slot_a.pth"
+                             else "best_slot_a.pth")
+                save_atomic(model.state_dict(), run_dir / best_slot)
+                best_digest = sha256(run_dir / best_slot)
             # Scheduler advance happens before checkpoint, matching restart.
             scheduler.step()
             checkpoint = {
@@ -435,10 +474,12 @@ def run(scenario, mode):
                 "rng": rng_snapshot(),
                 "recipe_hash": manifest_digest(manifest),
                 "best_pck": best,
+                "best_slot": best_slot,
+                "best_sha256": best_digest,
             }
             save_atomic(checkpoint, run_dir / "checkpoint_last.pth")
             if best_updated:
-                save_atomic(model.state_dict(), run_dir / "model_best.pth")
+                refresh_best_alias(run_dir, best_slot, best_digest)
             with metrics_file.open("a", encoding="utf-8") as logs:
                 logs.write(json.dumps(metrics, sort_keys=True) + "\n")
             print(json.dumps(metrics, sort_keys=True), flush=True)
