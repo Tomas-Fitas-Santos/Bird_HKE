@@ -1,7 +1,7 @@
 # Isolated training preparation: ViTPose-B and PoseBH-B
 
-This folder starts integrating the **two remaining external architectures**
-identified in `external_models/README.md`. It does **not** change or train the
+This folder provides shared read-only preparation for the **two additional architectures**
+identified in `external_models/README.md`. It does **not** modify or itself train the
 six native Bird_HKE models, RTMPose-M, or the existing uncertainty pipeline.
 
 ## Scope and isolation contract
@@ -52,33 +52,33 @@ while updating input/positional embedding handling and the four output joints.
 The output is a per-model data/config recipe. It does **not** import MMPose or
 instantiate/train any model, so it does not touch an ongoing GPU run.
 
-## Deliberate training gate
+## Implementation status and GPU gate
 
-**Not train-ready yet.** A model-specific config/adapter with a real
-forward/backward + validation GPU smoke test must be implemented before
-training is enabled. The planned local paths are:
+Both isolated adapters and guarded training launchers are now implemented:
+
+- Standard ViTPose-B: [guide](../vitpose/README.md)
+- **PoseBH-B single-dataset adaptation:** [guide](../posebh/README.md)
+
+PoseBH's official published method depends on six heterogeneous datasets and
+pretrained ViTPose++ weights. The code here adapts MoE and prototype losses to
+a **single BirdGaze dataset, from random initialization**; published
+cross-dataset CPS/CSS and pretrained results are **not reproduced**.
+This distinction must be clearly disclosed when comparing results.
+
+The prepared paths are:
 
 - `external_models/vitpose/birdgaze_vitpose_b.py`
 - `external_models/posebh/birdgaze_posebh_b.py`
 
-The optional `--reserve-run` mode will only reserve a brand-new output
-directory when the specified model adapter exists; it never overwrites or
-resumes an existing directory. Do not use it until the model integration has
-passed the architecture-specific checks. At this stage there is deliberately
-no `--train` mode or command that launches an unadapted upstream trainer.
+Both implement **separate** model architectures, Python environments,
+run roots, manifests, strict resume and no-write real-data GPU smoke tests.
+Before starting any 100-epoch training runs, run unit and GPU smoke tests
+for **both** models sequentially:
 
-### Remaining implementation tasks
+```bash
+bash smoke_both_birdgaze_baselines.sh FD
+```
 
-1. Adapt the official **standard, single-task ViTPose-B** backbone and heatmap
-   head to four BirdGaze keypoints. Do not use any ViTPose++ multi-task
-   adapters or pretrained MAE weights.
-2. Adapt PoseBH-B prototype learning to the four-keypoint single-dataset
-   setting; check the paper's multi-dataset self-supervision and scheduling
-   assumptions before claiming an equivalent architecture.
-3. Build model-specific isolated environment setup, disposable GPU training
-   smoke tests, strict resume/RNG restoration and guarded launchers.
-4. Verify source-crop handling including signed/zero FD scales and OS/CS
-   bbox differences. Final evaluation must use independently annotated videos.
-
-This staged approach is intentional: it establishes provable write boundaries
-before implementing substantial, potentially incompatible upstream models.
+Repeat for OS and CS after validating the corrected crop-aware exports.
+A smoke failure is a blocker; no demo or fallback trainer should run.
+**No Titan smoke/100-epoch results have yet been verified.**
