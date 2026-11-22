@@ -297,7 +297,7 @@ def validation_epoch(model, dataset, epoch):
     }
 
 
-def gpu_smoke(dataset):
+def gpu_smoke(dataset, validation_dataset):
     """Disposable forward/backward/optimizer step with actual BirdGaze data."""
     print("ViTPose-B real-data GPU preflight (no writes)...", flush=True)
     set_determinism()
@@ -306,6 +306,8 @@ def gpu_smoke(dataset):
     scaler = torch.amp.GradScaler("cuda", enabled=True)
     sample = next(iter(make_epoch_loader(dataset, epoch=0, train=True)))
     model.train()
+    if float(sample["weight"].sum()) <= 0:
+        raise RuntimeError("Smoke batch has no labeled landmarks; select a supervised batch")
     with torch.autocast("cuda", dtype=torch.float16):
         output = model(sample["image"].cuda(non_blocking=True))
         loss = masked_heatmap_mse(
@@ -316,15 +318,29 @@ def gpu_smoke(dataset):
         raise RuntimeError("Nonfinite ViTPose-B real-data smoke-test loss")
     scaler.scale(loss).backward()
     if not any(p.grad is not None and torch.isfinite(p.grad).all()
+               and bool((p.grad.abs().sum() > 0).item())
                for p in model.parameters()):
-        raise RuntimeError("ViTPose-B smoke test produced no finite gradients")
+        raise RuntimeError("ViTPose-B smoke test produced no nonzero finite gradients")
     scaler.unscale_(optim)
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     scaler.step(optim)
     scaler.update()
+    model.eval()
+    with torch.no_grad():
+        validation = next(iter(make_epoch_loader(
+            validation_dataset, epoch=0, train=False)))
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            test_output = model(validation["image"].cuda(non_blocking=True))
+        test_xy = decode_image_coordinates(
+            test_output.float().cpu().numpy(),
+            validation["center"].numpy(), validation["scale"].numpy(),
+            validation["offset"].numpy(),
+        )
+        if not np.isfinite(test_xy).all():
+            raise RuntimeError("ViTPose-B validation decoding produced invalid coordinates")
     print(f"GPU preflight PASS; model={sum(p.numel() for p in model.parameters()):,} "
           f"parameters, first loss={loss.item():.7f}", flush=True)
-    del model, optim, scaler, sample, output, loss
+    del model, optim, scaler, sample, output, loss, validation, test_output, test_xy
     torch.cuda.empty_cache()
 
 
@@ -343,7 +359,7 @@ def run(scenario, mode):
     print(f"ViTPose-B {scenario}: train={len(train_data)} val={len(valid_data)}; "
           f"seed={RECIPE['seed']}; run={run_dir}", flush=True)
     print("Recipe hash:", manifest_digest(manifest), flush=True)
-    gpu_smoke(train_data)
+    gpu_smoke(train_data, valid_data)
     if mode == "smoke":
         print("All checks passed. No directory or checkpoint was created.", flush=True)
         return
