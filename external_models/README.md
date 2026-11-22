@@ -5,10 +5,10 @@ Its dedicated [FD setup, test, train and resume guide](rtmpose/README.md)
 supersedes the earlier RTMPose *initial adapter* notes below. The code is
 committed, but it has **not yet been run on Titan in the isolated MMPose
 environment**. Run the real FD data/GPU preflight before definitive training.
-ViTPose++-B and PoseBH-B remain the next architectures to integrate.
+ViTPose-B and PoseBH-B remain the next architectures to integrate.
 
 
-Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose++-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
+Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
 
 ## Upstream source acquisition
 
@@ -24,20 +24,20 @@ The sources are cloned to `.external_pose_sources/`, which is Git-ignored. The u
 | Baseline | Upstream | Pinned Git commit |
 |---|---|---|
 | RTMPose-M | https://github.com/open-mmlab/mmpose | `759b39c13fea6ba094afc1fa932f51dc1b11cbf9` |
-| ViTPose++-B | https://github.com/ViTAE-Transformer/ViTPose | `c050ed29112da7704797cc1a65af0234b525010d` |
+| ViTPose-B | https://github.com/ViTAE-Transformer/ViTPose | `c050ed29112da7704797cc1a65af0234b525010d` |
 | PoseBH-B | https://github.com/uyoung-jeong/PoseBH | `8f03438f913b559edb0a2beed54e77d1560edba3` |
 
 Preserve upstream copyright/LICENSE when selectively importing any source. Do not commit full upstream checkouts, generated weights, or BirdGaze media.
 
 ## Do not mix third-party MMPose installations into the current Bird_HKE environment
 
-RTMPose targets modern MMPose/MMEngine, whereas ViTPose++ and PoseBH contain older forked MMPose code. Use isolated environments for the upstream implementations. Keep the current Bird_HKE PyTorch/CUDA environment unchanged, including active runs.
+RTMPose targets modern MMPose/MMEngine, whereas standard ViTPose and PoseBH use older forked MMPose implementations. Use isolated environments for the upstream implementations. Keep the current Bird_HKE PyTorch/CUDA environment unchanged, including active runs.
 
 ## Work required before launching the nine training jobs
 
 1. **BirdGaze adapters.** Use existing FD/OS/CS `annot/train.json` and `annot/val.json` and the corresponding `images/`. Map four landmarks **[crown, left eye, right eye, beak tip]**. Match the existing BirdGaze preprocessing, crops, horizontal flip (swap eyes), and annotation-availability masking. Distinguish missing coordinates from occluded coordinates that are actually annotated.
 2. **RTMPose-M adapter.** Preserve CSPNeXt-M, its GAU/SimCC head, and SimCC loss/decode. Configure four output keypoints and a compatible MMPose dataset interface. Do not force HRNet heatmap loss onto this architecture.
-3. **ViTPose++-B adapter.** Preserve the relevant ViTPose++ ViT-B components. Configure BirdGaze-only four-keypoint training with random weights. Document that this is *single-dataset training*, not a reproduction of the published multi-dataset pretrained configuration.
+3. **Standard ViTPose-B adapter.** Use the official single-task ViTPose-B configuration (`ViTPose_base_simple_coco_256x192.py`, pinned upstream revision) as the architecture reference: ViT-B (12 layers, 768 hidden dimensions, 12 heads) with the simple heatmap head. Adapt input resolution to 256×256 and output to BirdGaze's four keypoints, with random initialization and no MAE/pretrained weights. Do not use ViTPose++ multi-task adapters.
 4. **PoseBH-B adaptation.** Verify prototype learning and associated losses remain well-defined with one dataset and four keypoints. The upstream PoseBH training config is multi-dataset and contains freeze/cluster scheduling. Do not claim to benchmark the published full multi-dataset method if these mechanisms cannot be preserved meaningfully.
 5. **Reproducible runners.** Each model×dataset needs a fixed seed 2026, 256×256 input, correctly initialized weights, 100 epoch maximum, run-specific checkpoint directory, validation-only model selection, full model/optimizer/scheduler/RNG checkpoint restoration and a config/annotation fingerprint. Batch and optimizer must be comparable but architecture-specific heads/losses must be preserved.
 6. **Shared predictions/evaluation.** Convert all keypoint predictions to original-image pixel coordinates in the existing BirdGaze keypoint order and use the same evaluation/videos, detector or ground-truth boxes, postprocessing, and metrics. Do not evaluate validation images as an independent test set.
@@ -71,7 +71,7 @@ The conversion requires Pillow, but not torch, MMPose, or a GPU. It writes outpu
 
 **DO NOT launch RTMPose training yet:** the pinned upstream MMPose/MMDetection/MMCV environment, runtime config loading, actual MMPose forward/backward, and checkpoint-resume protections still need on-cluster validation. The current `(base)` test run skipped most framework tests. Run the existing Bird_HKE tests in its real environment too.
 
-The new RTMPose-M config is a starting integration, not a claim of fully equivalent augmentation across frameworks; the native RTMPose SimCC loss is preserved. ViTPose++-B and PoseBH-B adapters remain to be implemented.
+The new RTMPose-M config is a starting integration, not a claim of fully equivalent augmentation across frameworks; the native RTMPose SimCC loss is preserved. ViTPose-B and PoseBH-B adapters remain to be implemented.
 
 ### Titan dataset-folder and zero-keypoint handling
 
