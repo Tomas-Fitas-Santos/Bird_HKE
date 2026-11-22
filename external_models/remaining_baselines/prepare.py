@@ -118,6 +118,7 @@ def validate_standard_vitpose_config(path: Path) -> None:
     head = field(model, "keypoint_head")
     expected = (
         (field(model, "type"), "TopDown", "model type"),
+        (field(model, "pretrained"), None, "pretrained weights"),
         (field(backbone, "type"), "ViT", "backbone type"),
         (field(backbone, "embed_dim"), 768, "embedding dimension"),
         (field(backbone, "depth"), 12, "depth"),
