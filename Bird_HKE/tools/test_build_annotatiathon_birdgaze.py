@@ -1,6 +1,10 @@
-"""Smoke tests: run with python -m unittest discover -s Bird_HKE/tools -p 'test_build_annotatiathon_birdgaze.py'."""
+"""Standalone synthetic tests for exact Nightjar UUID -> BirdGaze conversion.
+
+Run: python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon_birdgaze.py" -v
+"""
 from __future__ import annotations
 import csv
+import hashlib
 import json
 import subprocess
 import sys
@@ -10,174 +14,180 @@ from pathlib import Path
 from PIL import Image
 
 SCRIPT = Path(__file__).with_name("build_annotatiathon_birdgaze.py")
+EBIRD_UUID = "00003100-347e-48f2-a5c3-c0e9a09a51ff"
+NABIRDS_UUID = "000255d3-5719-4636-8839-6803cc9e359f"
+HEADERS = ["asset_id", "native_project_id", "relative_path", "kind", "size_bytes",
+           "sha256", "frame_width", "frame_height", "video_group", "frame_index"]
 
 
-def make_ann(path: Path, width=80, height=60, *, duplicate=False):
-    labels = [
-        {"classTitle": "bird", "geometryType": "rectangle", "points": {"exterior": [[4, 2], [70, 50]]}},
-        {"classTitle": "crown", "geometryType": "point", "points": {"exterior": [[30, 12]]}},
-        {"classTitle": "left_eye_occ", "geometryType": "point", "points": {"exterior": [[35, 20]]}},
-        {"classTitle": "right_eye", "geometryType": "point", "points": {"exterior": [[44, 21]]}},
-        {"classTitle": "beak", "geometryType": "point", "points": {"exterior": [[55, 23]]}},
-    ]
+def annotation(*, width=80, height=60, all_occluded=False, duplicate=False) -> dict:
+    objects = [{
+        "classTitle": "bird", "geometryType": "rectangle",
+        "points": {"exterior": [[4, 2], [70, 50]]},
+    }]
+    pts = {"crown": [30, 12], "left_eye": [35, 20],
+           "right_eye": [44, 21], "beak": [55, 23]}
+    for name, xy in pts.items():
+        title = name + "_occ" if all_occluded or name == "left_eye" else name
+        objects.append({
+            "classTitle": title, "geometryType": "point",
+            "points": {"exterior": [xy]},
+        })
     if duplicate:
-        labels.append(labels[1])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"size": {"width": width, "height": height}, "objects": labels}), encoding="utf-8")
+        objects.append(objects[1])
+    return {"size": {"width": width, "height": height}, "objects": objects}
 
 
-class TestConversion(unittest.TestCase):
+class ConverterTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.eann = self.root / "annotation eBird" / "ann"
-        self.nann = self.root / "annotation NABirds" / "ann"
-        self.eimgs = self.root / "images eBird"
-        self.nimgs = self.root / "images NABirds"
-        self.out = self.root / "BirdGaze output"
-        for d in (self.eann, self.nann, self.eimgs, self.nimgs):
-            d.mkdir(parents=True)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.ebird_ann = self.root / "EAnn" / "ann"
+        self.nabirds_ann = self.root / "NAnn" / "ann"
+        self.ebird_images = self.root / "eBird source"
+        self.nabirds_images = self.root / "NABirds source"
+        self.out = self.root / "Result"
+        self.map = self.root / "Nightjar_media_asset_map.csv"
+        for p in (self.ebird_ann, self.nabirds_ann, self.ebird_images, self.nabirds_images):
+            p.mkdir(parents=True)
+        self.rows = []
 
-    def add_frame(self, folder: str, name: str = "f_1.jpg", ann_prefix=""):
-        p = self.eimgs / folder / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (80, 60), (250, 250, 250)).save(p)
-        make_ann(self.eann / ann_prefix / (name + ".json"))
-        return p
+    def add_one(self, source="eBird", uid=None, *, all_occluded=False, duplicate=False,
+                width=80, record_project=None, remove_original=False):
+        is_ebird = source == "eBird"
+        uid = uid or (EBIRD_UUID if is_ebird else NABIRDS_UUID)
+        relative = ("Sterna/200836421/200836421_000043.jpg" if is_ebird
+                    else "0813/0813-2201.jpg")
+        original = (self.ebird_images if is_ebird else self.nabirds_images) / relative
+        original.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (80, 60), (180, 90, 20)).save(original)
+        img_bytes = original.read_bytes()
+        annroot = self.ebird_ann if is_ebird else self.nabirds_ann
+        (annroot / (uid + ".jpg.json")).write_text(
+            json.dumps(annotation(width=width, all_occluded=all_occluded, duplicate=duplicate)),
+            encoding="utf-8",
+        )
+        self.rows.append({
+            "asset_id": uid,
+            "native_project_id": str(record_project or (386759 if is_ebird else 386817)),
+            "relative_path": ("videos/" if is_ebird else "images/") + relative,
+            "kind": "video_frame" if is_ebird else "image",
+            "size_bytes": len(img_bytes),
+            "sha256": hashlib.sha256(img_bytes).hexdigest(),
+            "frame_width": 80, "frame_height": 60,
+            "video_group": "Sterna/200836421" if is_ebird else "",
+            "frame_index": 43 if is_ebird else "",
+        })
+        if remove_original:
+            original.unlink()
 
-    def add_nabirds(self, name: str):
-        p = self.nimgs / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (80, 60)).save(p)
-        make_ann(self.nann / (Path(name).name + ".json"))
+    def call(self, *args):
+        with self.map.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=HEADERS)
+            writer.writeheader()
+            writer.writerows(self.rows)
+        return subprocess.run([
+            sys.executable, str(SCRIPT),
+            "--ebird-ann", str(self.ebird_ann),
+            "--nabirds-ann", str(self.nabirds_ann),
+            "--ebird-images", str(self.ebird_images),
+            "--nabirds-images", str(self.nabirds_images),
+            "--output", str(self.out),
+            "--media-map", str(self.map), *args
+        ], text=True, capture_output=True)
 
-    def run_build(self, *extra):
-        return subprocess.run([sys.executable, str(SCRIPT), "--ebird-ann", str(self.eann),
-                               "--nabirds-ann", str(self.nann), "--ebird-images", str(self.eimgs),
-                               "--nabirds-images", str(self.nimgs), "--output", str(self.out), *extra],
-                              text=True, capture_output=True)
-
-    def test_build_keeps_coords_and_paths(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        self.add_nabirds("015/xyz.jpg")
-        p = self.run_build()
-        self.assertEqual(p.returncode, 0, p.stderr)
-        ebird = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
-        nb = json.loads((self.out / "annot/nabirds.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(ebird), 1)
-        self.assertEqual(len(nb), 1)
-        self.assertEqual(ebird[0]["image"], "eBird/Sterna/001/f_1.jpg")
-        self.assertEqual(ebird[0]["joints_vis"], [1, 0, 1, 1])
-        self.assertEqual(ebird[0]["joints"], [[30.0, 12.0], [35.0, 20.0], [44.0, 21.0], [55.0, 23.0]])
-        self.assertEqual(ebird[0]["scale"], 66 / 200)
-        self.assertTrue((self.out / "images" / ebird[0]["image"]).is_file())
-        # Only two annotation JSON files are produced. The occluded point is
-        # preserved in joints and excluded from supervision by joints_vis=0.
+    def test_both_sources_exact_mapping(self):
+        self.add_one("eBird")
+        self.add_one("NABirds")
+        result = self.call()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        e = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        n = json.loads((self.out / "annot/nabirds.json").read_text(encoding="utf-8"))
+        self.assertEqual(e[0]["image"], "eBird/Sterna/200836421/200836421_000043.jpg")
+        self.assertEqual(n[0]["image"], "NABirds/0813/0813-2201.jpg")
+        self.assertEqual(e[0]["joints_vis"], [1, 0, 1, 1])
+        self.assertEqual(e[0]["joints"][1], [35.0, 20.0])
+        self.assertEqual(e[0]["bbox"], [4.0, 2.0, 70.0, 50.0])
+        self.assertTrue((self.out / "images" / e[0]["image"]).is_file())
         self.assertEqual({p.name for p in (self.out / "annot").glob("*.json")},
                          {"ebird.json", "nabirds.json"})
-        self.assertFalse((self.out / "reports/supplemental_keypoints.jsonl").exists())
+        with (self.out / "reports/manifest.csv").open(newline="", encoding="utf-8-sig") as f:
+            records = list(csv.DictReader(f))
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(r["match_method"] == "nightjar_media_asset_id" for r in records))
 
-    def test_occluded_only_is_kept_in_source_json(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        ap = self.eann / "Sterna/001/f_1.jpg.json"
-        raw = json.loads(ap.read_text(encoding="utf-8"))
-        for obj in raw["objects"]:
-            if obj.get("geometryType") == "point":
-                obj["classTitle"] = obj["classTitle"].replace("_occ", "") + "_occ"
-        ap.write_text(json.dumps(raw), encoding="utf-8")
-        result = self.run_build()
+    def test_all_occluded_preserved(self):
+        self.add_one(all_occluded=True)
+        result = self.call()
         self.assertEqual(result.returncode, 0, result.stderr)
-        records = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["joints_vis"], [0, 0, 0, 0])
-        self.assertEqual(records[0]["joints"][0], [30.0, 12.0])
+        e = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        self.assertEqual(e[0]["joints_vis"], [0, 0, 0, 0])
+        self.assertEqual(e[0]["joints"][0], [30.0, 12.0])
 
-
-    def test_uuid_export_restores_original_frame_with_sha256(self):
-        original = self.eimgs / "Eurasian_Oystercatcher/200836421/200836421_000043.jpg"
-        original.parent.mkdir(parents=True)
-        Image.new("RGB", (80, 60), (250, 180, 90)).save(original)
-        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
-        exported.parent.mkdir(parents=True, exist_ok=True)
-        exported.write_bytes(original.read_bytes())
-        make_ann(self.eann / (exported.name + ".json"))
-        result = self.run_build()
+    def test_audit_only(self):
+        self.add_one()
+        result = self.call("--audit-only")
         self.assertEqual(result.returncode, 0, result.stderr)
-        rows = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["image"],
-                         "eBird/Eurasian_Oystercatcher/200836421/200836421_000043.jpg")
-        with (self.out / "reports/manifest.csv").open(encoding="utf-8-sig", newline="") as f:
-            record = next(csv.DictReader(f))
-        self.assertEqual(record["media_match"], "sha256_original")
+        self.assertFalse((self.out / "images").exists())
+        self.assertFalse((self.out / "annot").exists())
+        self.assertTrue((self.out / "reports/validation_report.json").is_file())
 
-    def test_uuid_export_unmatched_keeps_exported_media(self):
-        original = self.eimgs / "Eurasian_Oystercatcher/200836421/200836421_000043.jpg"
-        original.parent.mkdir(parents=True)
-        Image.new("RGB", (80, 60), (0, 0, 0)).save(original)
-        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
-        exported.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (80, 60), (250, 180, 90)).save(exported)
-        make_ann(self.eann / (exported.name + ".json"))
-        result = self.run_build()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rows = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
-        self.assertEqual(rows[0]["image"],
-                         "eBird/exported/00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg")
-        self.assertTrue((self.out / "images" / rows[0]["image"]).is_file())
-        with (self.out / "reports/manifest.csv").open(encoding="utf-8-sig", newline="") as f:
-            record = next(csv.DictReader(f))
-        self.assertTrue(record["media_match"].startswith("supervisely_export:"))
-
-    def test_uuid_export_strict_mode_rejects_unknown_original(self):
-        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
-        exported.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (80, 60), (250, 180, 90)).save(exported)
-        make_ann(self.eann / (exported.name + ".json"))
-        result = self.run_build("--require-original", "--audit-only")
+    def test_missing_uuid_in_database_rejected(self):
+        self.add_one()
+        self.rows[0]["asset_id"] = NABIRDS_UUID
+        result = self.call("--audit-only")
         self.assertEqual(result.returncode, 2)
-        self.assertFalse((self.out / "images").exists())
+        self.assertIn("0 matched", result.stdout)
+        self.assertFalse((self.out / "annot").exists())
 
-    def test_audit_only_does_not_copy_media(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        p = self.run_build("--audit-only")
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertFalse((self.out / "images").exists())
-        self.assertTrue((self.out / "reports/manifest.csv").exists())
+    def test_wrong_project_rejected(self):
+        self.add_one(record_project=386817)
+        result = self.call("--audit-only")
+        self.assertEqual(result.returncode, 2)
 
-    def test_ambiguous_name_blocks_build(self):
-        self.add_frame("A/111")
-        p = self.eimgs / "B/222/f_1.jpg"
-        p.parent.mkdir(parents=True)
-        Image.new("RGB", (80, 60)).save(p)
-        result = self.run_build()
+    def test_missing_original_rejected(self):
+        self.add_one(remove_original=True)
+        result = self.call()
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertFalse((self.out / "images").exists())
-        with (self.out / "reports/rejected_annotations.csv").open(encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        self.assertEqual(len(rows), 1)
-        self.assertIn("ambiguous", rows[0]["reason"])
+        self.assertFalse((self.out / "annot").exists())
 
-    def test_dimension_mismatch_blocks_build(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        make_ann(self.eann / "Sterna/001/f_1.jpg.json", width=40)
-        result = self.run_build()
+    def test_image_dimension_mismatch_rejected(self):
+        self.add_one(width=100)
+        result = self.call("--audit-only")
         self.assertEqual(result.returncode, 2)
-        self.assertFalse((self.out / "images").exists())
 
-    def test_duplicate_keypoint_blocks_build(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        make_ann(self.eann / "Sterna/001/f_1.jpg.json", duplicate=True)
-        result = self.run_build()
+    def test_duplicate_keypoint_rejected(self):
+        self.add_one(duplicate=True)
+        result = self.call("--audit-only")
         self.assertEqual(result.returncode, 2)
-        self.assertFalse((self.out / "images").exists())
 
-    def test_second_run_requires_explicit_resume(self):
-        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
-        self.assertEqual(self.run_build().returncode, 0)
-        self.assertEqual(self.run_build().returncode, 1)
-        self.assertEqual(self.run_build("--skip-sizes-if-existing").returncode, 0)
+    def test_source_sha_verification(self):
+        self.add_one()
+        result = self.call("--verify-sha256")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wrong_source_sha_verification_rejected(self):
+        self.add_one()
+        self.rows[0]["sha256"] = "0" * 64
+        result = self.call("--verify-sha256", "--audit-only")
+        self.assertEqual(result.returncode, 2)
+
+    def test_resume_explicit(self):
+        self.add_one()
+        self.assertEqual(self.call().returncode, 0)
+        self.assertEqual(self.call().returncode, 1)
+        self.assertEqual(self.call("--skip-sizes-if-existing").returncode, 0)
+
+    def test_partial_build_requires_explicit_opt_in(self):
+        self.add_one()
+        self.add_one("NABirds", remove_original=True)
+        self.assertEqual(self.call().returncode, 2)
+        self.assertEqual(self.call("--allow-partial").returncode, 0)
+        e = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        n = json.loads((self.out / "annot/nabirds.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(e), 1)
+        self.assertEqual(len(n), 0)
 
 
 if __name__ == "__main__":
