@@ -93,6 +93,52 @@ class TestConversion(unittest.TestCase):
         self.assertEqual(records[0]["joints_vis"], [0, 0, 0, 0])
         self.assertEqual(records[0]["joints"][0], [30.0, 12.0])
 
+
+    def test_uuid_export_restores_original_frame_with_sha256(self):
+        original = self.eimgs / "Eurasian_Oystercatcher/200836421/200836421_000043.jpg"
+        original.parent.mkdir(parents=True)
+        Image.new("RGB", (80, 60), (250, 180, 90)).save(original)
+        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
+        exported.parent.mkdir(parents=True, exist_ok=True)
+        exported.write_bytes(original.read_bytes())
+        make_ann(self.eann / (exported.name + ".json"))
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["image"],
+                         "eBird/Eurasian_Oystercatcher/200836421/200836421_000043.jpg")
+        with (self.out / "reports/manifest.csv").open(encoding="utf-8-sig", newline="") as f:
+            record = next(csv.DictReader(f))
+        self.assertEqual(record["media_match"], "sha256_original")
+
+    def test_uuid_export_unmatched_keeps_exported_media(self):
+        original = self.eimgs / "Eurasian_Oystercatcher/200836421/200836421_000043.jpg"
+        original.parent.mkdir(parents=True)
+        Image.new("RGB", (80, 60), (0, 0, 0)).save(original)
+        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
+        exported.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (80, 60), (250, 180, 90)).save(exported)
+        make_ann(self.eann / (exported.name + ".json"))
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        self.assertEqual(rows[0]["image"],
+                         "eBird/exported/00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg")
+        self.assertTrue((self.out / "images" / rows[0]["image"]).is_file())
+        with (self.out / "reports/manifest.csv").open(encoding="utf-8-sig", newline="") as f:
+            record = next(csv.DictReader(f))
+        self.assertTrue(record["media_match"].startswith("supervisely_export:"))
+
+    def test_uuid_export_strict_mode_rejects_unknown_original(self):
+        exported = self.eann.parent / "img" / "00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg"
+        exported.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (80, 60), (250, 180, 90)).save(exported)
+        make_ann(self.eann / (exported.name + ".json"))
+        result = self.run_build("--require-original", "--audit-only")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.out / "images").exists())
+
     def test_audit_only_does_not_copy_media(self):
         self.add_frame("Sterna/001", ann_prefix="Sterna/001")
         p = self.run_build("--audit-only")
