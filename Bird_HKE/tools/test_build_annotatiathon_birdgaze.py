@@ -125,6 +125,14 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(e[0]["joints_vis"], [0, 0, 0, 0])
         self.assertEqual(e[0]["joints"][0], [30.0, 12.0])
 
+    def test_legacy_nabirds_indexed_as_video_frame(self):
+        self.add_one("NABirds")
+        self.rows[0]["kind"] = "video_frame"
+        result = self.call()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = json.loads((self.out / "annot/nabirds.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(records), 1)
+
     def test_nabirds_sha256_restores_image_after_relocation(self):
         self.add_one("NABirds")
         old = self.nabirds_images / "0813/0813-2201.jpg"
