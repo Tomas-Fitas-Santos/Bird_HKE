@@ -12,9 +12,34 @@ This utility does not modify pose models, existing BirdGaze annotations, source 
 - NABirds images: E:\BirdGaze_v2\BirdGaze_Full_Dataset\images\NABirds
 - New output (default): E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026
 
+## Important: UUID filename matching in Supervisely exports
+
+The Annotatiathon Supervisely exports contain annotation JSONs named with UUIDs, not the original frame/image filenames. Original media cannot be associated with annotations by basename alone. The builder therefore looks for exported images in the sibling `img` folder of each Supervisely `ann` directory (or explicit `--ebird-export-images` and `--nabirds-export-images` overrides).
+
+Resolution order:
+
+1. Match an original by a unique filename if possible.
+2. Find the corresponding UUID image in the Supervisely exported `img/` folder and match its **exact SHA-256 hash** to original media of the same size. A unique exact match restores the original relative path, including eBird species/video/frame directories.
+3. If no unique original is found, preserve the verified Supervisely export image under `images/eBird/exported/<uuid>.jpg` or `images/NABirds/exported/<uuid>.jpg`. The image remains usable in BirdGaze, but the original video sequence cannot be recovered from the UUID alone.
+
+The `reports/manifest.csv` file includes a `media_match` column describing which path was used, and `reports/validation_report.json` gives per-source match counts. To require exact original matches and never allow the exported UUID fallback, add `--require-original`. To bypass hashing and use the exported image immediately when names differ, add `--no-hash-originals`. **Do not infer temporal order from exported UUID filenames.**
+
+If the export includes only `ann/` and no matching `img/`, and no separate UUID-to-original mapping exists, matching is impossible from filenames alone. Export the project images too, or provide an authoritative manifest linking the UUID names to original image paths.
+
 ## Run on the Windows machine holding E:
 
-In PowerShell, from the repository root:
+In PowerShell, from the repository root, first confirm both exported media folders exist:
+
+~~~powershell
+Get-ChildItem "E:\Annotatiathon 2026" -Directory -Filter "386759_*" |
+    ForEach-Object { Get-ChildItem $_.FullName -Directory -Recurse -Filter img | Select-Object -First 3 FullName }
+Get-ChildItem "E:\Annotatiathon 2026" -Directory -Filter "386817_*" |
+    ForEach-Object { Get-ChildItem $_.FullName -Directory -Recurse -Filter img | Select-Object -First 3 FullName }
+~~~
+
+If these return no image directories, the source exports may be annotation-only. The builder cannot safely reconstruct the match without additional image data or mapping.
+
+Then run the builder:
 
 ~~~powershell
 python -m pip install Pillow
@@ -73,7 +98,7 @@ The annotated occluded coordinates are preserved **inside the same two BirdGaze 
 
 ## Matching and validation
 
-Each Supervisely image annotation is matched by filename without the trailing .json and, if present, relative subdirectories. Global basename matching is permitted only when unique. Invalid or ambiguous filename matches, missing media, dimensions mismatches, malformed bbox coordinates, missing all four keypoints, duplicate keypoints, and out-of-image keypoints cause explicit rejections.
+Each Supervisely image annotation is first matched to original media using a unique basename when possible, and then through the exported image and SHA-256 comparison against the original media, constrained by byte size. For UUID exports without a unique exact original, the corresponding exported image itself is used as the authoritative annotated media (unless --require-original is set). Missing exported media, dimension mismatches, invalid bbox coordinates, missing all four keypoints, duplicate keypoints, and out-of-image keypoints cause explicit rejections. SHA-256 matches may fail when images were re-encoded, even if they look identical; the safe fallback preserves the exported media instead.
 
 This converter expects image-format Supervisely objects[], a single rectangular bird label, and point labels crown, left_eye, right_eye, beak, plus their _occ variants. It does not support Supervisely *video-format* exports. Unknown classes are ignored, not remapped. Multiple bounding boxes are rejected rather than assigning points ambiguously.
 
@@ -85,4 +110,4 @@ All conversion logic has been tested on synthetic Supervisely annotations, not t
 python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon_birdgaze.py" -v
 ~~~
 
-Seven tests cover correct conversion and paths, exactly two output annotations, preserved occluded coordinates including all-occluded samples, audit-only safety, ambiguous image names, mismatched dimensions, duplicate keypoints, and explicit reruns.
+Ten tests cover correct conversion and paths, exactly two output annotations, preserved occluded coordinates including all-occluded samples, audit-only safety, ambiguous image names, mismatched dimensions, duplicate keypoints, explicit reruns, UUID content-hash mapping, exported-media fallback and original-only strict mode.
