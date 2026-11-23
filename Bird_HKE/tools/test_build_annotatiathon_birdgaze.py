@@ -69,13 +69,29 @@ class TestConversion(unittest.TestCase):
         self.assertEqual(len(nb), 1)
         self.assertEqual(ebird[0]["image"], "eBird/Sterna/001/f_1.jpg")
         self.assertEqual(ebird[0]["joints_vis"], [1, 0, 1, 1])
-        self.assertEqual(ebird[0]["joints"], [[30.0, 12.0], [-1, -1], [44.0, 21.0], [55.0, 23.0]])
+        self.assertEqual(ebird[0]["joints"], [[30.0, 12.0], [35.0, 20.0], [44.0, 21.0], [55.0, 23.0]])
         self.assertEqual(ebird[0]["scale"], 66 / 200)
         self.assertTrue((self.out / "images" / ebird[0]["image"]).is_file())
-        meta = (self.out / "reports/supplemental_keypoints.jsonl").read_text(encoding="utf-8")
-        self.assertIn('"left_eye": {"state": "occluded", "xy": [35.0, 20.0]}', meta)
-        self.assertEqual(sum(len(json.loads((self.out / "annot" / f"{k}.json").read_text(encoding="utf-8")))
-                             for k in ("train", "val", "test", "occluded_only")), 2)
+        # Only two annotation JSON files are produced. The occluded point is
+        # preserved in joints and excluded from supervision by joints_vis=0.
+        self.assertEqual({p.name for p in (self.out / "annot").glob("*.json")},
+                         {"ebird.json", "nabirds.json"})
+        self.assertFalse((self.out / "reports/supplemental_keypoints.jsonl").exists())
+
+    def test_occluded_only_is_kept_in_source_json(self):
+        self.add_frame("Sterna/001", ann_prefix="Sterna/001")
+        ap = self.eann / "Sterna/001/f_1.jpg.json"
+        raw = json.loads(ap.read_text(encoding="utf-8"))
+        for obj in raw["objects"]:
+            if obj.get("geometryType") == "point":
+                obj["classTitle"] = obj["classTitle"].replace("_occ", "") + "_occ"
+        ap.write_text(json.dumps(raw), encoding="utf-8")
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = json.loads((self.out / "annot/ebird.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["joints_vis"], [0, 0, 0, 0])
+        self.assertEqual(records[0]["joints"][0], [30.0, 12.0])
 
     def test_audit_only_does_not_copy_media(self):
         self.add_frame("Sterna/001", ann_prefix="Sterna/001")
