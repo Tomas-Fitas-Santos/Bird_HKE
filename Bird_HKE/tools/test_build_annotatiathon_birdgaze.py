@@ -125,6 +125,35 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(e[0]["joints_vis"], [0, 0, 0, 0])
         self.assertEqual(e[0]["joints"][0], [30.0, 12.0])
 
+    def test_nabirds_sha256_restores_image_after_relocation(self):
+        self.add_one("NABirds")
+        old = self.nabirds_images / "0813/0813-2201.jpg"
+        relocated = self.nabirds_images / "original/NABirds/subfolder/newpath.jpg"
+        relocated.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(relocated)
+        result = self.call()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = json.loads((self.out / "annot/nabirds.json").read_text(encoding="utf-8"))
+        self.assertEqual(records[0]["image"], "NABirds/original/NABirds/subfolder/newpath.jpg")
+        with (self.out / "reports/manifest.csv").open(newline="", encoding="utf-8-sig") as f:
+            record = next(csv.DictReader(f))
+        self.assertEqual(record["match_method"], "nightjar_source_sha256")
+
+    def test_sha256_fallback_rejects_non_unique_media(self):
+        self.add_one("NABirds")
+        original = self.nabirds_images / "0813/0813-2201.jpg"
+        relocated = self.nabirds_images / "two/duplicate.jpg"
+        relocated.parent.mkdir(parents=True)
+        relocated.write_bytes(original.read_bytes())
+        moved = self.nabirds_images / "one/relocated.jpg"
+        moved.parent.mkdir(parents=True)
+        original.rename(moved)
+        result = self.call("--audit-only")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        with (self.out / "reports/rejected_annotations.csv").open(newline="", encoding="utf-8-sig") as f:
+            record = next(csv.DictReader(f))
+        self.assertIn("unique original", record["reason"])
+
     def test_audit_only(self):
         self.add_one()
         result = self.call("--audit-only")
