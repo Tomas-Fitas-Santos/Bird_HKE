@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import hashlib
 import json
 import math
 import os
@@ -35,7 +36,7 @@ KEYPOINT_ALIAS = {
     "beak": "beak", "beak_tip": "beak", "mouth_front_top": "beak",
 }
 CSV_FIELDS = ("source", "source_file", "annotation_file", "image",
-              "width", "height", "visible_count", "occluded_count")
+              "media_match", "width", "height", "visible_count", "occluded_count")
 
 
 def norm(s: str) -> str:
@@ -125,6 +126,74 @@ def find_media(ann: Path, ann_root: Path, idx: dict, root: Path) -> Path:
     raise ValueError(f"no source image matches {rel}")
 
 
+
+def file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class SourceHashMatcher:
+    """Find byte-identical originals using size buckets; no approximate guesses."""
+
+    def __init__(self, idx: dict):
+        self.by_size: dict[int, list[Path]] = collections.defaultdict(list)
+        for entries in idx["rel"].values():
+            for p in entries:
+                self.by_size[p.stat().st_size].append(p)
+        self.hash_cache: dict[Path, str] = {}
+
+    def find(self, exported: Path) -> tuple[Path | None, str]:
+        candidates = self.by_size.get(exported.stat().st_size, [])
+        if not candidates:
+            return None, "no_original_same_size"
+        target_hash = file_hash(exported)
+        matches = []
+        for candidate in candidates:
+            value = self.hash_cache.get(candidate)
+            if value is None:
+                value = file_hash(candidate)
+                self.hash_cache[candidate] = value
+            if value == target_hash:
+                matches.append(candidate)
+        if len(matches) == 1:
+            return matches[0], "sha256_original"
+        if len(matches) > 1:
+            return None, "ambiguous_identical_originals"
+        return None, "no_sha256_original_match"
+
+
+def locate_media(ap: Path, ann_root: Path, original_root: Path, original_idx: dict,
+                 exported_root: Path, exported_idx: dict | None,
+                 hash_matcher: SourceHashMatcher | None,
+                 require_original: bool) -> tuple[Path, Path, str]:
+    """Return actual source file, its relative destination path, and match method."""
+    try:
+        original = find_media(ap, ann_root, original_idx, original_root)
+        return original, original.relative_to(original_root), "original_filename"
+    except ValueError as first_error:
+        original_problem = str(first_error)
+    if exported_idx is None:
+        raise ValueError(f"{original_problem}; no Supervisely export images found at {exported_root}")
+    try:
+        exported = find_media(ap, ann_root, exported_idx, exported_root)
+    except ValueError as second_error:
+        raise ValueError(f"{original_problem}; exported image lookup: {second_error}") from second_error
+    if hash_matcher is not None:
+        original, reason = hash_matcher.find(exported)
+        if original is not None:
+            return original, original.relative_to(original_root), reason
+    else:
+        reason = "hash_matching_disabled"
+    if require_original:
+        raise ValueError(f"exported image found but unique original could not be resolved: {reason}")
+    # Exported pixels belong to this exact Supervisely annotation by export naming contract.
+    # Keep the UUID under a clearly marked 'exported' namespace if no original matches.
+    return exported, Path("exported") / exported.relative_to(exported_root), f"supervisely_export:{reason}"
+
+
 def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, int, int]:
     if not isinstance(ann, dict) or not isinstance(ann.get("objects"), list):
         raise ValueError("not a Supervisely single-image annotation with objects[]")
@@ -198,6 +267,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--nabirds-ann", type=Path, default=DEFAULT_NABIRDS_ANN)
     p.add_argument("--ebird-images", type=Path, default=DEFAULT_EBIRD_IMAGES)
     p.add_argument("--nabirds-images", type=Path, default=DEFAULT_NABIRDS_IMAGES)
+    p.add_argument("--ebird-export-images", type=Path, default=None,
+                   help="Supervisely img/ directory; default is sibling of the eBird ann/ directory")
+    p.add_argument("--nabirds-export-images", type=Path, default=None,
+                   help="Supervisely img/ directory; default is sibling of the NABirds ann/ directory")
+    p.add_argument("--no-hash-originals", action="store_true",
+                   help="skip content-based original restoration and use exported images when names do not match")
+    p.add_argument("--require-original", action="store_true",
+                   help="reject exported images unless a unique original is identified (preserves video paths)")
     p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     p.add_argument("--audit-only", action="store_true", help="validate everything and create reports without copying media")
     p.add_argument("--allow-partial", action="store_true", help="build valid subset despite rejected annotations")
@@ -246,38 +323,49 @@ def scan_and_build(args: argparse.Namespace) -> int:
     for src in (args.ebird_ann, args.nabirds_ann, args.ebird_images, args.nabirds_images):
         if not src.is_dir():
             raise FileNotFoundError(f"input directory does not exist: {src}")
-    ensure_independent_roots([args.ebird_ann, args.nabirds_ann, args.ebird_images, args.nabirds_images], args.output)
+    export_roots = (args.ebird_export_images or args.ebird_ann.parent / "img",
+                    args.nabirds_export_images or args.nabirds_ann.parent / "img")
+    ensure_independent_roots([args.ebird_ann, args.nabirds_ann, args.ebird_images, args.nabirds_images,
+                              *[p for p in export_roots if p.is_dir()]], args.output)
     report_dir = args.output / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     accepted, rejected, unique_images = [], [], {}
     stats = collections.Counter()
     source_specs = (("eBird", args.ebird_ann, args.ebird_images),
                     ("NABirds", args.nabirds_ann, args.nabirds_images))
-    for source, ann_root, image_root in source_specs:
+    for (source, ann_root, image_root), export_root in zip(source_specs, export_roots):
         print(f"Indexing {source} original images: {image_root}", flush=True)
         idx = discover_media(image_root)
+        if export_root.is_dir():
+            print(f"Indexing Supervisely exported {source} images: {export_root}", flush=True)
+            exported_idx = discover_media(export_root)
+            hashed = None if args.no_hash_originals else SourceHashMatcher(idx)
+        else:
+            print(f"Supervisely export img/ folder not found: {export_root}", flush=True)
+            exported_idx, hashed = None, None
         files = sorted(ann_root.rglob("*.json"), key=lambda p: str(p).casefold())
         stats[f"{source}_annotation_files"] = len(files)
         stats[f"{source}_media_files_available"] = sum(len(v) for v in idx["rel"].values())
         print(f"Scanning {source}: {len(files):,} annotation JSON files", flush=True)
         for i, ap in enumerate(files, 1):
             try:
-                original = find_media(ap, ann_root, idx, image_root)
-                rel = original.relative_to(image_root)
+                physical_image, rel, match_method = locate_media(
+                    ap, ann_root, image_root, idx, export_root, exported_idx, hashed, args.require_original)
                 dest_rel = (Path(source) / rel).as_posix()
                 key = norm(dest_rel)
                 if key in unique_images:
                     raise ValueError(f"image already annotated by {unique_images[key]}")
                 with ap.open("r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
-                record, n_vis, n_occ = convert(raw, dest_rel, original)
-                accepted.append({"source": source, "from": original, "annotation": ap,
-                                 "image": dest_rel, "record": record,
+                record, n_vis, n_occ = convert(raw, dest_rel, physical_image)
+                accepted.append({"source": source, "from": physical_image, "annotation": ap,
+                                 "image": dest_rel, "media_match": match_method, "record": record,
                                  "visible": n_vis, "occluded": n_occ,
                                  "width": int(raw.get("size", {}).get("width") or 0),
                                  "height": int(raw.get("size", {}).get("height") or 0)})
                 unique_images[key] = ap
                 stats[f"{source}_accepted"] += 1
+                stats[f"{source}_match_{match_method}"] += 1
                 stats[f"{source}_visible_points"] += n_vis
                 stats[f"{source}_occluded_points"] += n_occ
             except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as ex:
@@ -289,7 +377,7 @@ def scan_and_build(args: argparse.Namespace) -> int:
               "audit_only": bool(args.audit_only), "valid_annotations": len(accepted),
               "rejected_annotations": len(rejected), "statistics": dict(stats),
               "materialize": args.materialize,
-              "note": "Only annot/ebird.json and annot/nabirds.json are generated. Occluded coordinates are preserved in joints with joints_vis=0."}
+              "note": "Only annot/ebird.json and annot/nabirds.json are generated. Occluded coordinates are preserved in joints with joints_vis=0. UUID-export fallback images do not retain original video identity."}
     json_write(report_dir / "validation_report.json", report)
     with (report_dir / "rejected_annotations.csv").open("w", newline="", encoding="utf-8-sig") as f:
         cw = csv.DictWriter(f, fieldnames=("source", "annotation_file", "reason"))
@@ -301,9 +389,12 @@ def scan_and_build(args: argparse.Namespace) -> int:
         for a in accepted:
             cw.writerow({"source": a["source"], "source_file": str(a["from"]),
                          "annotation_file": str(a["annotation"]), "image": a["image"],
+                         "media_match": a["media_match"],
                          "width": a["width"], "height": a["height"],
                          "visible_count": a["visible"], "occluded_count": a["occluded"]})
     print(f"Audit: {len(accepted):,} accepted, {len(rejected):,} rejected. Reports: {report_dir}", flush=True)
+    for match_type, count in sorted((k, v) for k, v in stats.items() if "_match_" in k):
+        print(f"  {match_type}: {count:,}", flush=True)
     if args.audit_only:
         return 0 if not rejected else 2
     if rejected and not args.allow_partial:
