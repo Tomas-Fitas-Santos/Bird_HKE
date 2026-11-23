@@ -350,11 +350,10 @@ def run(args: argparse.Namespace) -> int:
                 item = mapping.get((str(project_id), uid))
                 if item is None:
                     raise ValueError(f"Nightjar media_assets.id not found in project {project_id}: {uid}")
+                # The dataset/project is authoritative for source identity.
+                # NABirds photo folders can have been indexed as 'video_frame'
+                # by older app imports, so do NOT reject based on the old kind.
                 kind = str(item["kind"]).lower()
-                if source == "eBird" and kind != "video_frame":
-                    raise ValueError(f"eBird entry is not a video_frame: {kind}")
-                if source == "NABirds" and kind != "image":
-                    raise ValueError(f"NABirds entry is not an image: {kind}")
                 try:
                     original, relative = resolve_original(item, images, source)
                     match_method = "nightjar_asset_relative_path"
@@ -395,6 +394,7 @@ def run(args: argparse.Namespace) -> int:
                 })
                 seen.add(key)
                 stats[f"{source}_matched"] += 1
+                stats[f"{source}_indexed_kind_{kind}"] += 1
                 stats[f"{source}_match_{match_method}"] += 1
                 stats[f"{source}_visible_points"] += nv
                 stats[f"{source}_occluded_points"] += no
