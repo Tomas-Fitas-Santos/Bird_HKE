@@ -55,10 +55,27 @@ if (Test-Path -LiteralPath $temp) {
 }
 Push-Location $root
 try {
-    # Runs against the EXISTING db container, without exposing credentials.
-    & docker compose --env-file $envFile -f $composeFile exec -T db psql -X -q -v ON_ERROR_STOP=1 -U $dbUser -d $dbName -c $sql | Set-Content -LiteralPath $temp -Encoding UTF8
-    if ($LASTEXITCODE -ne 0) {
-        throw "Read-only Nightjar PostgreSQL export failed. Confirm the original nightjar-live db container is running."
+    # Avoid passing 100k+ Unicode paths through the Windows PowerShell
+    # text pipeline. Write UTF-8 CSV inside the existing PostgreSQL container
+    # and copy it byte-for-byte to the Windows destination.
+    $containerId = (& docker compose --env-file $envFile -f $composeFile ps -q db | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $containerId) {
+        throw "Nightjar live DB container is not running. Use the original Nightjar deployment."
+    }
+    $remote = "/tmp/nightjar-media-asset-map-export.csv"
+    try {
+        & docker exec $containerId psql -X -q -v ON_ERROR_STOP=1 -U $dbUser -d $dbName -o $remote -c $sql
+        if ($LASTEXITCODE -ne 0) {
+            throw "Read-only Nightjar database export failed."
+        }
+        $copySource = "{0}:{1}" -f $containerId, $remote
+        & docker cp $copySource $temp
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to copy the read-only media CSV from PostgreSQL container."
+        }
+    }
+    finally {
+        & docker exec $containerId rm -f $remote | Out-Null
     }
 }
 finally {
