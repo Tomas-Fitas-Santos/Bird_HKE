@@ -215,6 +215,46 @@ def safe_source_relative(record: dict, source: str) -> PurePosixPath:
     return candidate
 
 
+
+class ExactContentIndex:
+    """Lazy size-bucket index: find the original file using Nightjar's SHA256."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.by_size = defaultdict(list)
+        self.hash_cache = {}
+        print(f"Indexing original media byte sizes for safe fallback: {root}", flush=True)
+        for directory, _, names in os.walk(root):
+            for name in names:
+                p = Path(directory) / name
+                if p.suffix.casefold() not in MEDIA_EXTS:
+                    continue
+                try:
+                    self.by_size[p.stat().st_size].append(p)
+                except OSError:
+                    continue
+
+    def lookup(self, entry: dict) -> tuple[Path, PurePosixPath]:
+        raw_hash = str(entry.get("sha256") or "").strip().lower()
+        raw_size = str(entry.get("size_bytes") or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", raw_hash) or not raw_size.isdigit():
+            raise ValueError("Nightjar SHA-256 or media size missing for content lookup")
+        candidates = self.by_size.get(int(raw_size), [])
+        matches = []
+        for p in candidates:
+            if p not in self.hash_cache:
+                self.hash_cache[p] = sha256_file(p)
+            if self.hash_cache[p] == raw_hash:
+                matches.append(p)
+        if len(matches) != 1:
+            raise ValueError(
+                f"cannot restore unique original by database SHA-256: "
+                f"{len(matches)} matching files out of {len(candidates)} size candidates"
+            )
+        path = matches[0]
+        return path, PurePosixPath(path.relative_to(self.root).as_posix())
+
+
 def resolve_original(record: dict, root: Path, source: str) -> tuple[Path, PurePosixPath]:
     relative = safe_source_relative(record, source)
     direct = root.joinpath(*relative.parts)
@@ -292,6 +332,7 @@ def run(args: argparse.Namespace) -> int:
     rejected = []
     stats = Counter()
     seen = set()
+    content_indexes: dict[str, ExactContentIndex] = {}
     sources = (
         ("eBird", args.ebird_project_id, args.ebird_ann, args.ebird_images),
         ("NABirds", args.nabirds_project_id, args.nabirds_ann, args.nabirds_images),
@@ -314,7 +355,21 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError(f"eBird entry is not a video_frame: {kind}")
                 if source == "NABirds" and kind != "image":
                     raise ValueError(f"NABirds entry is not an image: {kind}")
-                original, relative = resolve_original(item, images, source)
+                try:
+                    original, relative = resolve_original(item, images, source)
+                    match_method = "nightjar_asset_relative_path"
+                except ValueError as missing_path:
+                    # No guessed basename or dimension matches: require the exact
+                    # original SHA-256 recorded at Nightjar dataset import time.
+                    if source not in content_indexes:
+                        content_indexes[source] = ExactContentIndex(images)
+                    try:
+                        original, relative = content_indexes[source].lookup(item)
+                    except ValueError as lookup_error:
+                        raise ValueError(f"{missing_path}; {lookup_error}") from lookup_error
+                    if source == "eBird" and len(relative.parts) < 3:
+                        raise ValueError("SHA-matched eBird file lacks species/video/frame structure")
+                    match_method = "nightjar_source_sha256"
                 if original.suffix.lower() != match.group("ext").lower():
                     raise ValueError(f"Supervisely filename extension differs from original: {annpath.name}")
                 destrel = (PurePosixPath(source) / relative).as_posix()
@@ -333,13 +388,14 @@ def run(args: argparse.Namespace) -> int:
                 accepted.append({
                     "source": source, "uuid": uid, "original": original,
                     "annotation_file": annpath, "image": destrel, "record": rec,
-                    "match_method": "nightjar_media_asset_id",
+                    "match_method": match_method,
                     "video_group": str(item.get("video_group") or ""),
                     "frame_index": str(item.get("frame_index") or ""),
                     "width": w, "height": h, "visible_count": nv, "occluded_count": no,
                 })
                 seen.add(key)
                 stats[f"{source}_matched"] += 1
+                stats[f"{source}_match_{match_method}"] += 1
                 stats[f"{source}_visible_points"] += nv
                 stats[f"{source}_occluded_points"] += no
             except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -351,7 +407,7 @@ def run(args: argparse.Namespace) -> int:
         "schema": "birdgaze-annotatiathon-2026-v2", "state": "AUDITED",
         "accepted": len(accepted), "rejected": len(rejected),
         "counts": dict(stats), "mapping_csv": str(args.media_map),
-        "note": "Exact Nightjar UUID mapping; no dimension-based or filename-order guesses.",
+        "note": "Exact Nightjar UUID mapping, original relative paths with SHA-256 fallback; no filename-order or dimension-based guesses.",
     }
     write_json(report_dir / "validation_report.json", report)
     with (report_dir / "rejected_annotations.csv").open("w", newline="", encoding="utf-8-sig") as out:
