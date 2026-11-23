@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
-import hashlib
 import json
 import math
 import os
@@ -35,8 +34,8 @@ KEYPOINT_ALIAS = {
     "right_eye": "right_eye", "eye_right": "right_eye",
     "beak": "beak", "beak_tip": "beak", "mouth_front_top": "beak",
 }
-CSV_FIELDS = ("source", "source_file", "annotation_file", "image", "split",
-              "width", "height", "visible_count", "occluded_count", "group")
+CSV_FIELDS = ("source", "source_file", "annotation_file", "image",
+              "width", "height", "visible_count", "occluded_count")
 
 
 def norm(s: str) -> str:
@@ -126,7 +125,7 @@ def find_media(ann: Path, ann_root: Path, idx: dict, root: Path) -> Path:
     raise ValueError(f"no source image matches {rel}")
 
 
-def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, dict, int, int]:
+def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, int, int]:
     if not isinstance(ann, dict) or not isinstance(ann.get("objects"), list):
         raise ValueError("not a Supervisely single-image annotation with objects[]")
     size = ann.get("size") or {}
@@ -139,13 +138,11 @@ def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, dict, in
     if w0 is not None and h0 is not None and (int(w0), int(h0)) != (w, h):
         raise ValueError(f"Supervisely image dimensions {w0}x{h0} do not match file {w}x{h}")
     bboxes, points = [], collections.defaultdict(list)
-    unknown_labels = collections.Counter()
     for obj in ann["objects"]:
         if not isinstance(obj, dict):
             raise ValueError("non-object item in objects[]")
         label, state = label_info(str(obj.get("classTitle", "")))
         if label is None:
-            unknown_labels[str(obj.get("classTitle", ""))] += 1
             continue
         geom = str(obj.get("geometryType", "")).casefold()
         if label == "bird":
@@ -165,7 +162,7 @@ def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, dict, in
     center = [(x1 + x2) / 2, (y1 + y2) / 2]
     # BirdGaze loader adds its own 1.25x padding on the stored scalar scale.
     scale = max(x2 - x1, y2 - y1) / 200.0
-    joints, joints_vis, supplemental = [], [], {}
+    joints, joints_vis = [], []
     n_visible = n_occluded = 0
     for key in KEYPOINTS:
         entries = points.get(key, [])
@@ -175,40 +172,24 @@ def convert(ann: dict, image: str, physical_image: Path) -> tuple[dict, dict, in
             state, pt = entries[0]
             if not (0 <= pt[0] < w and 0 <= pt[1] < h):
                 raise ValueError(f"{key} coordinate outside image: {pt}")
-            supplemental[key] = {"state": state, "xy": pt}
             if state == "visible":
                 joints.append(pt)
                 joints_vis.append(1)
                 n_visible += 1
             else:
-                joints.append([-1, -1])
+                # Preserve occluded coordinates inside the same BirdGaze record;
+                # joints_vis=0 masks them during supervised training.
+                joints.append(pt)
                 joints_vis.append(0)
                 n_occluded += 1
         else:
             joints.append([-1, -1])
             joints_vis.append(0)
-            supplemental[key] = {"state": "not_annotated", "xy": None}
     if n_visible + n_occluded == 0:
         raise ValueError("bird rectangle has no annotated head keypoints")
     birdgaze = {"image": image, "center": center, "scale": scale,
                 "bbox": box, "joints": joints, "joints_vis": joints_vis}
-    extra = {"image": image, "keypoints": supplemental, "unknown_labels": dict(unknown_labels)}
-    return birdgaze, extra, n_visible, n_occluded
-
-
-def choose_split(group: str, seed: str, train: float, val: float) -> str:
-    h = hashlib.sha256((seed + "\0" + group).encode("utf-8")).digest()
-    u = int.from_bytes(h[:8], "big") / (2**64)
-    return "train" if u < train else "val" if u < train + val else "test"
-
-
-def group_for(source: str, relative: Path) -> str:
-    # Video groups include *all* frames of a video, preventing sequence leakage.
-    if source == "eBird":
-        if len(relative.parts) < 3:
-            raise ValueError("eBird frame must be nested species/video/frame (at least 3 parts)")
-        return f"eBird/{relative.parts[0]}/{relative.parts[1]}"
-    return "NABirds/" + relative.as_posix()
+    return birdgaze, n_visible, n_occluded
 
 
 def parse_args() -> argparse.Namespace:
@@ -222,9 +203,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--allow-partial", action="store_true", help="build valid subset despite rejected annotations")
     p.add_argument("--materialize", choices=("copy", "hardlink"), default="copy",
                    help="hardlinks are fast but share bytes with the originals")
-    p.add_argument("--seed", default="nightjar-2026-v1")
-    p.add_argument("--train-ratio", type=float, default=0.8)
-    p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--skip-sizes-if-existing", action="store_true", help="reuse existing output images with matching byte sizes")
     return p.parse_args()
 
@@ -268,8 +246,6 @@ def scan_and_build(args: argparse.Namespace) -> int:
     for src in (args.ebird_ann, args.nabirds_ann, args.ebird_images, args.nabirds_images):
         if not src.is_dir():
             raise FileNotFoundError(f"input directory does not exist: {src}")
-    if not 0 <= args.train_ratio <= 1 or not 0 <= args.val_ratio <= 1 or args.train_ratio + args.val_ratio >= 1:
-        raise ValueError("invalid train and validation ratios")
     ensure_independent_roots([args.ebird_ann, args.nabirds_ann, args.ebird_images, args.nabirds_images], args.output)
     report_dir = args.output / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -292,24 +268,16 @@ def scan_and_build(args: argparse.Namespace) -> int:
                 key = norm(dest_rel)
                 if key in unique_images:
                     raise ValueError(f"image already annotated by {unique_images[key]}")
-                group = group_for(source, rel)
                 with ap.open("r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
-                record, extra, n_vis, n_occ = convert(raw, dest_rel, original)
-                split = choose_split(group, args.seed, args.train_ratio, args.val_ratio)
-                if n_vis == 0:
-                    split = "occluded_only"  # keep data; avoid undefined validation metrics
-                extra.update({"source": source, "original_image": str(original),
-                              "annotation_json": str(ap), "split": split, "group": group})
+                record, n_vis, n_occ = convert(raw, dest_rel, original)
                 accepted.append({"source": source, "from": original, "annotation": ap,
-                                 "image": dest_rel, "split": split, "group": group,
-                                 "record": record, "extra": extra,
+                                 "image": dest_rel, "record": record,
                                  "visible": n_vis, "occluded": n_occ,
                                  "width": int(raw.get("size", {}).get("width") or 0),
                                  "height": int(raw.get("size", {}).get("height") or 0)})
                 unique_images[key] = ap
                 stats[f"{source}_accepted"] += 1
-                stats[f"{source}_{split}"] += 1
                 stats[f"{source}_visible_points"] += n_vis
                 stats[f"{source}_occluded_points"] += n_occ
             except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as ex:
@@ -320,9 +288,8 @@ def scan_and_build(args: argparse.Namespace) -> int:
     report = {"dataset": "BirdGaze_Annotatiathon_2026", "status": "AUDITED",
               "audit_only": bool(args.audit_only), "valid_annotations": len(accepted),
               "rejected_annotations": len(rejected), "statistics": dict(stats),
-              "train_ratio": args.train_ratio, "val_ratio": args.val_ratio,
-              "seed": args.seed, "materialize": args.materialize,
-              "note": "Occluded points are kept in reports/supplemental_keypoints.jsonl and masked in BirdGaze joints."}
+              "materialize": args.materialize,
+              "note": "Only annot/ebird.json and annot/nabirds.json are generated. Occluded coordinates are preserved in joints with joints_vis=0."}
     json_write(report_dir / "validation_report.json", report)
     with (report_dir / "rejected_annotations.csv").open("w", newline="", encoding="utf-8-sig") as f:
         cw = csv.DictWriter(f, fieldnames=("source", "annotation_file", "reason"))
@@ -334,9 +301,8 @@ def scan_and_build(args: argparse.Namespace) -> int:
         for a in accepted:
             cw.writerow({"source": a["source"], "source_file": str(a["from"]),
                          "annotation_file": str(a["annotation"]), "image": a["image"],
-                         "split": a["split"], "width": a["width"], "height": a["height"],
-                         "visible_count": a["visible"], "occluded_count": a["occluded"],
-                         "group": a["group"]})
+                         "width": a["width"], "height": a["height"],
+                         "visible_count": a["visible"], "occluded_count": a["occluded"]})
     print(f"Audit: {len(accepted):,} accepted, {len(rejected):,} rejected. Reports: {report_dir}", flush=True)
     if args.audit_only:
         return 0 if not rejected else 2
@@ -345,7 +311,7 @@ def scan_and_build(args: argparse.Namespace) -> int:
         return 2
     if not accepted:
         raise ValueError("No valid annotations to build")
-    outputs = {k: [] for k in ("train", "val", "test", "ebird", "nabirds", "occluded_only")}
+    outputs = {"ebird": [], "nabirds": []}
     seen_media: set[str] = set()
     for i, a in enumerate(accepted, 1):
         key = norm(a["image"])
@@ -354,18 +320,14 @@ def scan_and_build(args: argparse.Namespace) -> int:
                             args.materialize, args.skip_sizes_if_existing)
             seen_media.add(key)
         outputs[a["source"].lower()].append(a["record"])
-        outputs[a["split"]].append(a["record"])
         if i % 10000 == 0:
             print(f"Materialized {i:,}/{len(accepted):,}", flush=True)
     annot_dir = args.output / "annot"
     annot_dir.mkdir(parents=True, exist_ok=True)
     for k, records in outputs.items():
         json_write(annot_dir / (k + ".json"), records)
-    with (report_dir / "supplemental_keypoints.jsonl").open("w", encoding="utf-8") as f:
-        for a in accepted:
-            f.write(json.dumps(a["extra"], ensure_ascii=False) + "\n")
     report.update({"status": "BUILT", "images_copied_or_linked": len(seen_media),
-                   "splits": {k: len(v) for k, v in outputs.items()}})
+                   "source_counts": {k: len(v) for k, v in outputs.items()}})
     json_write(report_dir / "validation_report.json", report)
     print(f"Built: {len(seen_media):,} images, {len(accepted):,} annotations into {args.output}", flush=True)
     return 0
