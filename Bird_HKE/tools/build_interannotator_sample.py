@@ -377,8 +377,17 @@ def export(args, selected, pairs, quotas, capacities, coverage):
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"Output already exists and is not empty: {output}")
     if args.dry_run:
-        print(f"DRY RUN: would export {len(selected):,} unique frames and "
+        species_counts = Counter(f"{f.source}/{f.species}" for f in selected)
+        video_counts = Counter(f.video for f in selected if f.video)
+        print(f"DRY RUN: would export {len(selected):,} unique images and "
               f"{sum(quotas.values()):,} independent assignments to {output}", flush=True)
+        print(f"  Diversity: {len(species_counts)} source/species groups, "
+              f"{len(video_counts)} distinct eBird videos; "
+              f"max {max(video_counts.values(), default=0)} frames from one video", flush=True)
+        print(f"  Source counts: {dict(Counter(f.source for f in selected))}", flush=True)
+        for species, count in species_counts.most_common(12):
+            print(f"    {species}: {count} selected", flush=True)
+        print(f"  Candidate capacity under thresholds: {dict(capacities)}", flush=True)
         return
     out_import = output / "supervisely_upload"
     out_private = output / "private_reference"
