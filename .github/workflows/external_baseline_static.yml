@@ -9,6 +9,8 @@ on:
       - tests/test_posebh_b.py
       - tests/test_vitpose_b.py
       - tests/test_remaining_baseline_preflight.py
+      - tests/test_baseline_training_probe.py
+      - test_both_birdgaze_training.sh
       - setup_posebh_b.sh
       - setup_vitpose_b.sh
       - smoke_both_birdgaze_baselines.sh
@@ -36,6 +38,7 @@ jobs:
           bash -n setup_vitpose_b.sh
           bash -n setup_posebh_b.sh
           bash -n smoke_both_birdgaze_baselines.sh
+          bash -n test_both_birdgaze_training.sh
       - name: Test read-only isolation preflight with synthetic data
         run: python -m unittest discover -s tests -p 'test_remaining_baseline_preflight.py' -v
       - name: Install CPU-only model test dependencies
@@ -46,3 +49,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_vitpose_b.py' -v
       - name: Run PoseBH-B CPU model and prototype tests
         run: python -m unittest discover -s tests -p 'test_posebh_b.py' -v
+      - name: Run training integration probe CPU contract tests
+        run: python -m unittest discover -s tests -p 'test_baseline_training_probe.py' -v
