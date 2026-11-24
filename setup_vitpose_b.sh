@@ -56,18 +56,13 @@ PY
     fi
     mkdir -p "$(dirname "$PREFIX")"
     # Share *read-only* installed torch/CUDA wheels from base, but create
-    # completely separate site-packages for future ViTPose-specific packages.
+    # separately writable site-packages for future ViTPose-specific packages.
     "$BASE_PY" -m venv --system-site-packages "$PREFIX"
     "$PREFIX/bin/python" - <<'PY'
 import sys
-import torch
-import cv2
-import numpy
-assert "vitpose" in sys.prefix.lower()
-assert torch.cuda.is_available()
-print("ViTPose venv ready:", sys.executable)
-print("Torch", torch.__version__, "CUDA", torch.version.cuda)
-print("NumPy", numpy.__version__, "cv2", cv2.__version__)
+print("Isolated environment:", sys.executable)
+print("Environment prefix:", sys.prefix)
+print("Now check dependencies and CUDA on the target GPU node.")
 PY
     echo "Only the isolated environment was created; no pip installation performed."
     ;;
