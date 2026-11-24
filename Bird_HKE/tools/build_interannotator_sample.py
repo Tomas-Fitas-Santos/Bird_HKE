@@ -506,7 +506,8 @@ def parse():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", type=Path, default=DEFAULT_ROOT)
     p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    p.add_argument("--quota-scale", type=float, default=2.0)
+    p.add_argument("--quota-scale", type=float, default=1.4,
+                   help="scale original availability quotas (default 1.4 = Tomás 30/day over 14 days)")
     p.add_argument("--quotas-json", type=Path, default=None)
     p.add_argument("--days", type=int, default=14)
     p.add_argument("--tomas-daily-cap", type=float, default=None,
