@@ -246,6 +246,97 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(report["skipped_unannotated"], 0)
         self.assertEqual(report["rejected"], 1)
 
+    def test_retained_annotation_issues_keep_both_images_and_raw_json(self):
+        self.make_one(source="eBird")
+        self.make_one(source="NABirds")
+        # The first bird has a missing bounding box; the second has a
+        # duplicate left eye. Both must remain physically available.
+        for source, uid, remove_box in (
+            ("eBird", UUID_E, True), ("NABirds", UUID_N, False)
+        ):
+            root = self.export_e if source == "eBird" else self.export_n
+            ann = root / "Complete video library · all species" / "ann" / (uid + ".jpg.json")
+            payload = json.loads(ann.read_text(encoding="utf-8"))
+            if remove_box:
+                payload["objects"] = payload["objects"][1:]
+            else:
+                payload["objects"].append(dict(payload["objects"][2]))
+            ann.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.run_build("--retain-annotation-issues")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.read_annotation("ebird")), 0)
+        self.assertEqual(len(self.read_annotation("nabirds")), 0)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["pending_corrections"], 2)
+        self.assertEqual(report["accepted"], 0)
+        self.assertEqual(report["rejected"], 0)
+        self.assertEqual(report["images_materialized"], 2)
+        for source, uid, orig_relative in (
+            ("eBird", UUID_E, "Sterna/200836421/200836421_000043.jpg"),
+            ("NABirds", UUID_N, "Species/015/IMG_025.jpg"),
+        ):
+            original = self.orig_e if source == "eBird" else self.orig_n
+            image = self.output / "images" / source / orig_relative
+            self.assertTrue(image.exists())
+            self.assertEqual(image.read_bytes(), (original / orig_relative).read_bytes())
+            review_json = (self.output / "pending_corrections" / "annotations" /
+                           source / (uid + ".jpg.json"))
+            self.assertTrue(review_json.exists())
+            self.assertTrue((self.output / "pending_corrections" /
+                             "image_info" / source / (uid + ".jpg.json")).exists())
+            self.assertTrue(json.loads(review_json.read_text())["objects"])
+        with (self.output / "reports" / "pending_corrections.csv").open(
+                encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["status"] for r in rows}, {"pending_correction"})
+        self.assertTrue(all(r["reason"] for r in rows))
+        with (self.output / "reports" / "manifest.csv").open(
+                encoding="utf-8-sig", newline="") as handle:
+            records = list(csv.DictReader(handle))
+        self.assertEqual({r["annotation_status"] for r in records}, {"pending_correction"})
+
+    def test_retained_issues_coexist_with_valid_training_annotations(self):
+        self.make_one(source="eBird")
+        self.make_one(source="NABirds")
+        nabirds = (self.export_n / "Complete video library · all species" /
+                   "ann" / (UUID_N + ".jpg.json"))
+        payload = json.loads(nabirds.read_text())
+        payload["objects"] = [payload["objects"][0]]  # bbox but no keypoints
+        nabirds.write_text(json.dumps(payload))
+        result = self.run_build("--retain-annotation-issues")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.read_annotation("ebird")), 1)
+        self.assertEqual(len(self.read_annotation("nabirds")), 0)
+        with (self.output / "reports" / "manifest.csv").open(
+                encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual({r["annotation_status"] for r in rows},
+                         {"valid", "pending_correction"})
+
+    def test_retention_does_not_waive_image_integrity_checks(self):
+        self.make_one(source="eBird", bad_hash=True)
+        result = self.run_build("--retain-annotation-issues")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse((self.output / "images").exists())
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["pending_corrections"], 0)
+        self.assertEqual(report["rejected"], 1)
+
+    def test_retention_audit_reports_pending_without_materializing(self):
+        self.make_one(source="NABirds")
+        nabirds = (self.export_n / "Complete video library · all species" /
+                   "ann" / (UUID_N + ".jpg.json"))
+        payload = json.loads(nabirds.read_text())
+        payload["objects"] = [payload["objects"][0]]
+        nabirds.write_text(json.dumps(payload))
+        result = self.run_build("--retain-annotation-issues", "--audit-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["pending_corrections"], 1)
+        self.assertFalse((self.output / "images").exists())
+        self.assertFalse((self.output / "pending_corrections").exists())
+
     def test_partial_rejected_blocks(self):
         self.make_one(source="eBird")
         self.make_one(source="NABirds", bad_hash=True)
