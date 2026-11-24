@@ -105,7 +105,7 @@ class ExportTests(unittest.TestCase):
             "--media-map", str(self.base / "absent-map.csv"),
             "--output", str(self.output), *flags,
         ]
-        return subprocess.run(args, text=True, capture_output=True)
+        return subprocess.run(args, text=True, capture_output=True, timeout=60)
 
     def read_annotation(self, src):
         return json.loads((self.output / "annot" / (src + ".json")).read_text(encoding="utf-8"))
