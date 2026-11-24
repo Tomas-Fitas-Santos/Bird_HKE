@@ -161,6 +161,9 @@ class ReannotationSampleTests(unittest.TestCase):
         self.assertEqual(set(grouped.values()), {2})
         by_person = Counter(row["annotator"] for row in rows)
         self.assertEqual(by_person, {"Paulo": 2, "Luís": 2, "Riccardo": 2, "Romain": 2})
+        weeks = Counter((row["annotator"], int(row["suggested_week"])) for row in rows)
+        self.assertEqual(set(weeks.values()), {1})
+        self.assertEqual(len(weeks), 8)
 
     def test_not_enough_diverse_frames_fails_explicitly(self):
         for idx in range(4):
