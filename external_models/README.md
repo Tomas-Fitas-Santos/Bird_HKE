@@ -15,6 +15,31 @@ still required for both**. See the [ViTPose-B guide](vitpose/README.md),
 
 Goal: nine **single-seed, randomly initialized** experiments: RTMPose-M, ViTPose-B, and PoseBH-B, each on FD / OS / CS. Keep the original training runs and video evaluation unchanged.
 
+## How to qualify both models before full training
+
+On Titan, install neither model's legacy MMPose stack. Use the modern PyTorch
+CUDA environment only as a **read-only base** for two separately writable
+venvs, and inspect imports with
+`python -m external_models.remaining_baselines.check_deps`. Needed Python
+modules: `torch` (CUDA-enabled), `numpy`, `cv2`, and `PIL`
+(Pillow, used only to generate COCO preflight exports).
+The Python stdlib supplies `unittest`, so no pytest install is required.
+
+Once both dedicated environments and the pinned upstream source checkouts
+are prepared (see the per-model README), run:
+
+```bash
+bash test_both_birdgaze_training.sh FD
+```
+
+The script validates dependencies and CPU tests, then **sequentially** runs
+both GPU smoke tests and two real-data training epochs per model on a small
+subset, including checkpoint write and strict full resume. It uses a
+separate disposable scratch namespace and **never launches 100-epoch runs**.
+It requires 5 GiB of free scratch disk. Repeat for OS and CS after
+generating their annotations. Neither a green CPU CI check nor a green
+single-step smoke test by itself proves end-to-end training readiness.
+
 ## Upstream source acquisition
 
 From the root of the existing `phase-3-passive-uncertainty` checkout:
