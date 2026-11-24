@@ -314,6 +314,39 @@ class ExportTests(unittest.TestCase):
         self.assertEqual({r["annotation_status"] for r in rows},
                          {"valid", "pending_correction"})
 
+    def test_corrected_review_annotation_can_be_reimported_without_editing_source(self):
+        self.make_one(source="eBird")
+        source_json = (self.export_e / "Complete video library · all species" /
+                       "ann" / (UUID_E + ".jpg.json"))
+        original = json.loads(source_json.read_text(encoding="utf-8"))
+        damaged = dict(original)
+        damaged["objects"] = original["objects"][1:]  # remove bird box
+        source_json.write_text(json.dumps(damaged), encoding="utf-8")
+        initial = self.run_build("--retain-annotation-issues")
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self.assertEqual(len(self.read_annotation("ebird")), 0)
+        correction = (self.output / "pending_corrections" / "annotations" /
+                      "eBird" / (UUID_E + ".jpg.json"))
+        fixed = json.loads(correction.read_text(encoding="utf-8"))
+        fixed["objects"].insert(0, original["objects"][0])
+        correction.write_text(json.dumps(fixed), encoding="utf-8")
+        rebuilt = self.run_build("--retain-annotation-issues",
+                                 "--use-corrected-annotations",
+                                 "--skip-sizes-if-existing")
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["accepted"], 1)
+        self.assertEqual(report["pending_corrections"], 0)
+        self.assertEqual(len(self.read_annotation("ebird")), 1)
+        # The original export remains untouched; corrections are an overlay.
+        self.assertEqual(json.loads(source_json.read_text(encoding="utf-8")),
+                         damaged)
+        with (self.output / "reports" / "manifest.csv").open(
+                encoding="utf-8-sig", newline="") as handle:
+            rec = next(csv.DictReader(handle))
+        self.assertEqual(rec["annotation_status"], "valid")
+        self.assertEqual(Path(rec["annotation_json"]), correction)
+
     def test_retention_does_not_waive_image_integrity_checks(self):
         self.make_one(source="eBird", bad_hash=True)
         result = self.run_build("--retain-annotation-issues")
