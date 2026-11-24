@@ -96,7 +96,7 @@ class ConverterTests(unittest.TestCase):
             "--nabirds-images", str(self.nabirds_images),
             "--output", str(self.out),
             "--media-map", str(self.map), *args
-        ], text=True, capture_output=True)
+        ], text=True, capture_output=True, timeout=60)
 
     def test_both_sources_exact_mapping(self):
         self.add_one("eBird")
