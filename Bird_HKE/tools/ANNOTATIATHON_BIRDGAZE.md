@@ -88,11 +88,12 @@ python -m pip install Pillow
 # Run synthetic tests first:
 python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon*.py" -v
 
-# Audit only (does not copy images or write annotation outputs):
-python Bird_HKE/tools/build_annotatiathon_birdgaze.py --audit-only
+# Audit the current Annotatiathon collection; include annotation-only issues
+# in the pending-correction category, without copying images yet:
+python -u Bird_HKE/tools/build_annotatiathon_birdgaze.py --source-mode exports --retain-annotation-issues --audit-only
 
-# After inspecting reports and confirming zero rejections:
-python Bird_HKE/tools/build_annotatiathon_birdgaze.py
+# After confirming that non-annotation integrity errors (rejected) are zero:
+python -u Bird_HKE/tools/build_annotatiathon_birdgaze.py --source-mode exports --retain-annotation-issues
 ~~~
 
 **This new export-based mode does NOT require access to the Nightjar database,
@@ -108,6 +109,12 @@ Optional arguments:
 - --ignore-nightjar-map: ignore an existing optional mapping CSV and use
   content hashes alone for original lookups
 - --audit-only: generate reports, without copying any media
+- --retain-annotation-issues: keep images with known fixable annotation errors
+  in the dataset and copy their original annotation JSONs to
+  pending_corrections/ rather than treating them as usable training labels
+- --use-corrected-annotations: apply edited copies from
+  pending_corrections/annotations/ (requires --skip-sizes-if-existing
+  when the dataset images were already materialized)
 - --allow-partial: build an explicitly incomplete subset despite rejections;
   do NOT use for the authoritative dataset
 - --materialize hardlink: faster, no duplicate bytes, but only on the same
@@ -132,13 +139,19 @@ BirdGaze_Annotatiathon_2026/
       <original relative path>      (when hash match is unique)
       exported/<uuid>.jpg           (otherwise)
   annot/
-    ebird.json
-    nabirds.json
+    ebird.json                   # validated training records only
+    nabirds.json                 # validated training records only
+  pending_corrections/
+    annotations/eBird/<uuid>.jpg.json
+    annotations/NABirds/<uuid>.jpg.json
+    image_info/eBird/<uuid>.jpg.json
+    image_info/NABirds/<uuid>.jpg.json
   reports/
     validation_report.json
-    rejected_annotations.csv
+    pending_corrections.csv     # original paths, hashes, issue, status
+    rejected_annotations.csv    # integrity and non-label failures
     skipped_unannotated.csv
-    manifest.csv
+    manifest.csv                # valid and pending images; annotation_status
 ~~~
 
 Each annotation has BirdGaze fields image, bbox, center, scale, joints,
@@ -150,11 +163,17 @@ dimension divided by 200, before the existing loader's 1.25 padding.
 Unannotated images are normal in a Supervisely export: an image can have an
 `ann/*.json` file with `"objects": []` even though no one labeled it.
 The new export builder classifies these as **skipped_unannotated**, not
-rejected. Their images are not copied to the training dataset. Only verified
-nonempty annotations produce BirdGaze records. Nonempty but incomplete,
-malformed or inconsistent annotations are still **rejected** and block the
-official build. The audit reconciles
-`accepted + skipped_unannotated + rejected = annotation_files`.
+rejected. Their images are not copied to the dataset. Verified annotated
+images produce BirdGaze records. With `--retain-annotation-issues`, known
+annotation-only issues (duplicate or missing bird/keypoints, image dimensions
+disagreeing with the annotation) become **pending_corrections**. Their images
+stay under images/eBird/ and images/NABirds/ with recovered original paths
+where available; raw Supervisely JSONs and image-info metadata are retained
+for later manual correction. They do **not** appear in ebird.json/nabirds.json
+until validated. Image/annotation pairing failures, invalid image hashes and
+other non-label problems are **rejected** and still block the official build.
+The audit reconciles
+`accepted + pending_corrections + skipped_unannotated + rejected = annotation_files`.
 
 Use the following command to quickly inspect the last run's rejection
 categories before re-running the full original-image SHA-256 scan:
@@ -166,12 +185,41 @@ Import-Csv $report | Group-Object source, reason |
     Format-Table -AutoSize -Wrap
 ~~~
 
-The next audit prints `matched`, `unannotated/skipped`, and `rejected`.
-Outputs include `reports/skipped_unannotated.csv` as well as
-`reports/rejected_annotations.csv`. If genuine rejections remain, inspect
-them before building. The `--no-original-lookup` option allows a faster
+The next audit prints `valid`, `pending correction`, `unannotated/skipped`,
+and `rejected`. Outputs include `reports/pending_corrections.csv` with
+exact issue and hash provenance for the images needing correction. If any
+non-label rejections remain, inspect them before building. The `--no-original-lookup` option allows a faster
 annotation-classification-only audit, but does not restore eBird video paths.
 Do a full audit without that option before building the temporal dataset.
+
+## Correcting annotations later
+
+1. Open `reports/pending_corrections.csv` to identify each image and
+   the reason its annotation needs review. The image is already located
+   under `images/<source>/<original hierarchy>` when an original
+   SHA-256 path match exists.
+2. Edit the *copy* in `pending_corrections/annotations/<source>/` (or
+   replace that copied JSON with a corrected Supervisely annotation).
+   Never edit the original export's ann/ files. Keep its matching image
+   and UUID filename unchanged.
+3. Apply corrected files to the training JSONs using:
+
+~~~powershell
+python -u Bird_HKE/tools/build_annotatiathon_birdgaze.py --source-mode exports --retain-annotation-issues --use-corrected-annotations --skip-sizes-if-existing
+~~~
+
+Any still-invalid corrections remain `pending_correction`. Corrected
+and valid labels move into the appropriate BirdGaze training JSON.
+The original Supervisely export is never modified; the correction copies
+are independent. The updated audit remains safe:
+
+~~~powershell
+python -u Bird_HKE/tools/build_annotatiathon_birdgaze.py --source-mode exports --retain-annotation-issues --use-corrected-annotations --audit-only
+~~~
+
+A `--skip-sizes-if-existing` rebuild is designed for the same existing
+dataset output (it checks file sizes rather than rehashing existing copies).
+Do not use that flag when the existing output images cannot be trusted.
 
 The audit manifest records matched image files, their SHA256, optional
 image-info paths, any original source path, and match method:
@@ -184,9 +232,14 @@ Expected annotation inputs based on the previous failed audit:
 - NABirds: 48,562
 - Total: 99,009
 
-The new export may have more or fewer files; compare actual counts.
+The prior audit identified 74,532 validated annotations, 63 annotation
+issues, and 24,414 empty annotations. With the retention flag, the expected
+output is 74,595 images, 63 records in pending_corrections.csv, two
+training annotation JSONs containing 74,532 valid records, and zero
+non-label rejections (if no other errors emerge).
 **Unannotated images are skipped and do not block building.**
-Any rejected nonempty annotation still blocks the build by default.
+Known annotation-only issues may be retained only with
+`--retain-annotation-issues`; other rejections block the build by default.
 
 **Warning:** The converter cannot preserve eBird temporal identity when an
 exported UUID image has no verified original path. Do not construct temporal
