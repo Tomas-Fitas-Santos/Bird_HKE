@@ -184,6 +184,21 @@ class ExportTests(unittest.TestCase):
         self.assertFalse((self.output / "images").exists())
         self.assertFalse((self.output / "annot").exists())
 
+    def test_source_with_images_but_no_annotations_fails(self):
+        self.make_one(source="eBird")
+        (self.export_e / "Complete video library · all species" / "ann" /
+         (UUID_E + ".jpg.json")).unlink()
+        result = self.run_build("--audit-only")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("images but no annotation JSONs", result.stderr)
+
+    def test_source_with_annotations_but_missing_images_fails(self):
+        exported, _ = self.make_one(source="eBird")
+        exported.unlink()
+        result = self.run_build("--audit-only")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("no Supervisely-exported images", result.stderr)
+
     def test_partial_rejected_blocks(self):
         self.make_one(source="eBird")
         self.make_one(source="NABirds", bad_hash=True)
