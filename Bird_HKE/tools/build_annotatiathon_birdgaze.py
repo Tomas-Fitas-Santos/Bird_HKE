@@ -322,6 +322,10 @@ def cli() -> argparse.Namespace:
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--verify-sha256", action="store_true",
                         help="verify original media hashes from Nightjar database (can read 100+ GB)")
+    parser.add_argument("--retain-annotation-issues", action="store_true",
+                        help="keep matched images with fixable annotation problems in images/, "
+                             "save raw labels under pending_corrections/, and exclude them "
+                             "from the valid BirdGaze training JSONs")
     parser.add_argument("--allow-partial", action="store_true",
                         help="allow building valid subset despite rejected annotations")
     parser.add_argument("--materialize", choices=("copy", "hardlink"), default="copy")
