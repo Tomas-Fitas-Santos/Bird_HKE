@@ -6,7 +6,7 @@ Build a **double-blind reannotation study** from the validated BirdGaze Annotati
 
 - Each selected image is assigned to **exactly two different annotators**.
 - All selected images were annotated at the event (present in the validated
-  \`annot/ebird.json\` or \`annot/nabirds.json\`), not unannotated/empty.
+  `annot/ebird.json` or `annot/nabirds.json`), not unannotated/empty.
 - The new annotators see **only the original bird bounding box**, not any
   event keypoints. The nine Nightjar point classes remain available so
   reviewers can add landmark coordinates and visible/occluded classes.
@@ -41,13 +41,13 @@ Total: **2,200 different images × 2 independent people per image**.
 If Tomás is actually limited to **30 images/day**, 14 days permits 420
 rather than 600; if everyone else stays on double quotas, the adjusted
 study is 4,220 assignments / 2,110 unique images. Pass
-\`--tomas-daily-cap 30\` to select that plan.
+`--tomas-daily-cap 30` to select that plan.
 
 ## Inputs
 
 Default local BirdGaze source dataset:
 
-\`E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026\`
+`E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026`
 
 Required:
 
@@ -83,27 +83,27 @@ python -u Bird_HKE/tools/build_interannotator_sample.py
 ~~~
 
 Default **eBird only** focuses on the requested diverse video poses.
-To include 20% labeled NABirds photos, use \`--nabirds-share 0.20\`
+To include 20% labeled NABirds photos, use `--nabirds-share 0.20`
 during both dry-run and build. E.g. 1,760 eBird frames and 440 NABirds
 photos in the standard 2,200-image plan. The sample still requires exactly
 two reviewers for every selected image.
 
 If the eBird sample cannot satisfy the strict pose/video constraints,
 the program stops with a diagnostic; it **does not silently duplicate
-frames**. Adjust \`--max-per-video 16\` or \`--min-pose-distance 0.08\`
-explicitly, rerun \`--dry-run\` first, and record the applied settings.
+frames**. Adjust `--max-per-video 16` or `--min-pose-distance 0.08`
+explicitly, rerun `--dry-run` first, and record the applied settings.
 Default parameters: maximum 12 frames per video; minimum 6 positions
 apart in sorted frame order; normalized landmark pose distance ≥0.10
 for any selected pair within the same video; three annotated head
 landmarks minimum; seed 20261124.
 
-For custom people/quotas, pass \`--quotas-json "path\to\quotas.json"\`
+For custom people/quotas, pass `--quotas-json "path\to\quotas.json"`
 with a JSON object mapping person name to integer image counts.
 The sum must be even; nobody may receive more assignments than the
 number of unique frames.
 
-Optional \`--make-zip\` creates a potentially large
-\`supervisely_upload.zip\`. The standard import app accepts a **folder**
+Optional `--make-zip` creates a potentially large
+`supervisely_upload.zip`. The standard import app accepts a **folder**
 as well as an archive, so avoid unnecessary zip/compression when local
 folder mounting is available. Output and source folders must be distinct
 and the script refuses to overwrite a nonempty output directory.
@@ -113,7 +113,7 @@ path for a different sample design.
 ## Output and access controls
 
 Default output:
-\`E:\Annotatiathon 2026\BirdGaze_Reannotation_2026\`
+`E:\Annotatiathon 2026\BirdGaze_Reannotation_2026`
 
 ~~~text
 BirdGaze_Reannotation_2026/
@@ -137,7 +137,7 @@ BirdGaze_Reannotation_2026/
   supervisely_upload.zip            # optional, contains upload folder ONLY
 ~~~
 
-Images have pseudonymous \`F00001_<hash>.jpg\` names, consistent for the
+Images have pseudonymous `F00001_<hash>.jpg` names, consistent for the
 two assigned copies. The file name is the stable linkage key when
 downloading reviewers' completed annotations. **Share only the assigned
 labeling job with each annotator**, not the full researcher's private files.
@@ -145,14 +145,14 @@ These are nine datasets in one project; upload/import does not automatically
 create an independently permissioned Supervisely labeling job.
 
 The file layout matches Supervisely's documented
-**Import Images in Supervisely Format** app: a project-level \`meta.json\`
-and per-dataset \`img/\` + \`ann/\` folders. In the Supervisely web interface,
-import the project from the \`supervisely_upload\` folder (or optional ZIP),
+**Import Images in Supervisely Format** app: a project-level `meta.json`
+and per-dataset `img/` + `ann/` folders. In the Supervisely web interface,
+import the project from the `supervisely_upload` folder (or optional ZIP),
 then create the nine labeling jobs and assign each dataset to its named
 participant. The imported project includes the keypoint classes even though
 only the original bounding box is present in annotations.
 
-**Do not upload** \`private_reference\` or the entire parent output directory:
+**Do not upload** `private_reference` or the entire parent output directory:
 doing so could expose original event landmarks and bias independent ratings.
 
 ## Subsequent statistics
