@@ -149,6 +149,8 @@ class OriginalHashIndex:
                     if size not in wanted:
                         continue
                     candidates += 1
+                    if candidates % 2000 == 0:
+                        print(f"  Hashed {candidates:,} candidate original images; {seen:,} exact matches found", flush=True)
                     digest = sha256_file(f)
                     if digest in wanted[size]:
                         self.by_hash[digest].append(f)
@@ -237,8 +239,8 @@ def build_from_exports(args) -> int:
                 rejected.append({"source": label, "annotation_file": str(annotation_path),
                                  "reason": str(exc)})
                 stats[f"{label}_rejected"] += 1
-            if n % 10000 == 0:
-                print(f"  {label}: {n:,}/{len(annotations):,} image/info pairs checked", flush=True)
+            if n % 2000 == 0:
+                print(f"  {label}: {n:,}/{len(annotations):,} export image/info pairs verified", flush=True)
 
         # Stage 2: exact source-path restoration from Nightjar UUID (if available)
         # or a single-pass SHA-256 index of the original files.
