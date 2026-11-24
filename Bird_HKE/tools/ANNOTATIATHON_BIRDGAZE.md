@@ -1,173 +1,178 @@
-# Annotatiathon 2026 → BirdGaze (eBird + NABirds)
+# BirdGaze Annotatiathon 2026: eBird + NABirds
 
-This converter builds a **single BirdGaze-compatible dataset**, with only two
-annotation files: annot/ebird.json and annot/nabirds.json.
+This converter creates a new BirdGaze dataset with **exactly two annotation JSONs**,
+one for the annotated eBird frames and one for NABirds photos. It does not
+modify source images, Supervisely annotations or training code.
 
-The 2026 Supervisely exports have ONLY per-image annotation JSONs, with names
-such as 00003100-347e-48f2-a5c3-c0e9a09a51ff.jpg.json. There are no exported
-Supervisely images. Original media come from the user-provided eBird and
-NABirds source directories. Neither source needs to be exported again.
+## New primary sources
 
-## Exact provenance: recovered from the Nightjar source code
+The latest full Supervisely exports are:
 
-The Supervisely-Monitoring-App repository uploads official source frames with:
+- **eBird:** E:\Annotatiathon 2026\Nightjar_Annotatiathon_eBird_videos
+- **NABirds:** E:\Annotatiathon 2026\Nightjar_Annotatiathon_NABirds
 
-~~~python
-def source_image_name(asset):
-    return asset.id + Path(asset.relative_path).suffix.lower()
-~~~
-
-See src/annotatiathon/native_media_pool.py. Consequently the UUID in each
-Supervisely source-image annotation filename equals media_assets.id in the
-Nightjar PostgreSQL database. The original image path is media_assets.relative_path.
-
-The authoritative relationship is:
+Expected Supervisely layout (the containing project/dataset folder can be nested):
 
 ~~~text
-<uuid>.jpg.json
-  -> media_assets.id = <uuid>
-  -> media_datasets.native_project_id = 386759 or 386817
-  -> media_assets.relative_path / sha256 / size_bytes
-  -> original eBird frame or NABirds photograph
+Nightjar_Annotatiathon_eBird_videos/
+  [project/dataset/]
+    ann/
+      <uuid>.jpg.json
+    img/
+      <uuid>.jpg
+    img_info/
+      <uuid>.jpg.json
+
+Nightjar_Annotatiathon_NABirds/
+  [project/dataset/]
+    ann/
+    img/
+    img_info/
 ~~~
 
-Mounted Nightjar datasets typically store relative paths like
-videos/<species>/<video>/<frame>.jpg and images/<species>/<photo>.jpg.
-The converter removes the leading videos/ or images/ prefix when resolving
-files under the original local media root.
+The builder searches recursively for the named folders. When an export
+contains only img/ and img_info/, it uses the **older** annotation JSONs from
+the previous source locations below and pairs them to the newly exported
+images by exact UUID filename.
 
-If the original files were reorganized after import and the relative path no
-longer resolves, it searches the specified source root using the **exact
-SHA-256 stored by Nightjar**, constrained by original byte size. There must be
-exactly one matching original. It never guesses a match from image dimensions,
-list order, nearby frames, or similar-looking image content.
+Previous annotation directories:
 
-## Source directories
+- E:\Annotatiathon 2026\386759_Nightjar · Official Annotatiathon Dataset · Official Event [NJ_ff71f54f-9f77-45c8-8504-c9c4028b0249_425800a7-4c09-4ebf-b6ef-2e78d7e62541]\Complete video library · all species\ann
+- E:\Annotatiathon 2026\386817_Nightjar · NABirds · Official Event [NJ_ff71f54f-9f77-45c8-8504-c9c4028b0249_b7ef26cf-2084-4a52-9293-19a46aceac87]\Complete video library · all species\ann
 
-- eBird annotations: E:\Annotatiathon 2026\386759_Nightjar · Official Annotatiathon Dataset · Official Event [NJ_ff71f54f-9f77-45c8-8504-c9c4028b0249_425800a7-4c09-4ebf-b6ef-2e78d7e62541]\Complete video library · all species\ann
-- NABirds annotations: E:\Annotatiathon 2026\386817_Nightjar · NABirds · Official Event [NJ_ff71f54f-9f77-45c8-8504-c9c4028b0249_b7ef26cf-2084-4a52-9293-19a46aceac87]\Complete video library · all species\ann
-- eBird frames: E:\Official-Annotatiathon-Dataset\Official Annotatiathon Dataset
-- NABirds images: E:\BirdGaze_v2\BirdGaze_Full_Dataset\images\NABirds
-- Media mapping CSV: E:\Annotatiathon 2026\Nightjar_media_asset_map.csv
-- Output: E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026
+The original media roots (optional for restoring the pre-export filename and
+video structure) are:
 
-All five path arguments have these defaults.
+- E:\Official-Annotatiathon-Dataset\Official Annotatiathon Dataset
+- E:\BirdGaze_v2\BirdGaze_Full_Dataset\images\NABirds
 
-## Step 1. Export the READ-ONLY media map from Nightjar
+## Matching algorithm
 
-Use the **original** Supervisely-Monitoring-App deployment and its original
-PostgreSQL volume. Do not create another empty PostgreSQL database or run a
-deployment/reset. Keep .env.live private.
+1. Pair each annotation file ending in .json with the exported image with the
+   **same complete filename** (e.g. ann/<uuid>.jpg.json -> img/<uuid>.jpg).
+   Files in a matching dataset's sibling img/ folder take precedence over a
+   global unique-basename lookup; ambiguous matches fail.
+2. Open matching img_info/<uuid>.jpg.json, when present. Supervisely ImageInfo
+   hash is Base64-encoded SHA256 of file contents. Hash the exported image
+   bytes and verify the metadata SHA256. Incorrect hashes are rejected, not
+   silently ignored.
+3. To restore **species/video/frame filenames**, optionally use a Nightjar
+   media asset mapping CSV if one is already available. The original file
+   must have the same exact byte hash as the exported image.
+4. Without the CSV, hash original eBird frames/NABirds images once, restricted
+   to file sizes occurring in the exported dataset. A single original having
+   the same SHA256 allows restoring its path. Duplicates and missing exact
+   matches DO NOT get arbitrarily assigned to a source video.
+5. When an original match cannot be made, the exported image remains a valid
+   image, stored under eBird/exported/<uuid>.jpg or
+   NABirds/exported/<uuid>.jpg. It can be used for image pose training, but the
+   original video timing/order cannot be reconstructed from that UUID alone.
+   See the CSV manifest for each image's provenance.
 
-From the Nightjar repo directory (the one containing compose.live.yaml and
-.env.live), run the script in this Bird_HKE branch:
+The exact content hash match is the strongest possible association between
+exported and original file bytes. If an image has been re-encoded, its SHA256
+changes; the converter preserves the correctly paired Supervisely image
+rather than guessing a source filename from visual similarity.
 
-~~~powershell
-& "C:\Users\User\Desktop\IST\Mestrado\Tese\pose_estimation_clean\Bird_HKE\Bird_HKE\tools\export_nightjar_media_map.ps1"
-~~~
-
-Alternatively, run it from elsewhere using -NightjarRepo with the actual
-Supervisely-Monitoring-App repository path.
-
-The script runs a read-only SELECT against the running Nightjar PostgreSQL
-container, exports only media_assets belonging to Supervisely project IDs
-386759 and 386817, and copies a UTF-8 CSV to
-E:\Annotatiathon 2026\Nightjar_media_asset_map.csv. No credentials are printed;
-no Nightjar or Supervisely objects are modified.
-
-It must find rows for both projects. Verify:
-
-~~~powershell
-Import-Csv "E:\Annotatiathon 2026\Nightjar_media_asset_map.csv" |
-    Group-Object native_project_id |
-    Select-Object Name, Count
-~~~
-
-If it reports no rows, check the ORIGINAL live Nightjar database, not the
-Supervisely annotation files; the UUID mapping cannot be reconstructed from
-annotation JSONs and original media filenames alone.
-
-## Step 2. Audit mappings and coordinates
+## Running on Windows
 
 From the Bird_HKE repository root:
 
 ~~~powershell
+git fetch origin
+git switch feat/annotatiathon-birdgaze-builder-20261123
+git pull --ff-only origin feat/annotatiathon-birdgaze-builder-20261123
+
 python -m pip install Pillow
+
+# Run synthetic tests first:
+python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon*.py" -v
+
+# Audit only (does not copy images or write annotation outputs):
 python Bird_HKE/tools/build_annotatiathon_birdgaze.py --audit-only
-~~~
 
-The audit validates exact UUID/project matching, existence of original files,
-file-size and image-dimension agreement, bird bounding boxes, duplicate and
-out-of-bounds joints. If the original path changed, it may scan images to find
-an exact SHA-256 match.
-
-Expected source annotation counts:
-- eBird: 50,447
-- NABirds: 48,562
-- Combined: 99,009
-
-Inspect:
-- reports/validation_report.json (counts and match methods)
-- reports/rejected_annotations.csv (all failures)
-- reports/manifest.csv (complete UUID -> original filename -> output mapping)
-
-The audit does NOT copy any media or produce annotation JSON outputs.
-It returns 0 for zero rejections, 2 if any annotations were rejected, and 1
-for an operational error.
-
-## Step 3. Build after audit passes
-
-~~~powershell
+# After inspecting reports and confirming zero rejections:
 python Bird_HKE/tools/build_annotatiathon_birdgaze.py
 ~~~
 
-The output is:
+**This new export-based mode does NOT require access to the Nightjar database,
+Docker, PostgreSQL, or a separate media-mapping CSV.**
+
+Optional arguments:
+
+- --source-mode exports: explicitly select full export mode
+- --no-original-lookup: faster scan using exported images and JSONs only;
+  all paths stay under eBird/exported/ or NABirds/exported/
+- --require-original-paths: reject any image without an unambiguous original
+  filename recovered from UUID mapping or exact file-content SHA256
+- --ignore-nightjar-map: ignore an existing optional mapping CSV and use
+  content hashes alone for original lookups
+- --audit-only: generate reports, without copying any media
+- --allow-partial: build an explicitly incomplete subset despite rejections;
+  do NOT use for the authoritative dataset
+- --materialize hardlink: faster, no duplicate bytes, but only on the same
+  disk volume and the output then shares bytes with the source
+- --skip-sizes-if-existing: resume interrupted copy using file sizes
+
+The previous original-mapping-only pipeline can still be selected explicitly
+with --source-mode nightjar-map and requires the Nightjar mapping CSV.
+
+## Output
+
+Default destination:
+E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026
 
 ~~~text
 BirdGaze_Annotatiathon_2026/
   images/
-    eBird/<species>/<video>/<frame>.jpg
-    NABirds/<relative-original-image-path>
+    eBird/
+      <species>/<video>/<frame>.jpg  (when original hash match is unique)
+      exported/<uuid>.jpg           (otherwise)
+    NABirds/
+      <original relative path>      (when hash match is unique)
+      exported/<uuid>.jpg           (otherwise)
   annot/
     ebird.json
     nabirds.json
   reports/
-    manifest.csv
-    rejected_annotations.csv
     validation_report.json
+    rejected_annotations.csv
+    manifest.csv
 ~~~
 
-ebird.json and nabirds.json are arrays of BirdGaze records with image,
-bbox, center, scale, joints and joints_vis. Keypoint order is crown, left eye,
-right eye, beak. Occluded keypoints retain their annotated coordinates, but
-are masked using joints_vis=0. Unannotated keypoints are [-1,-1] with
-joints_vis=0. The scale follows the existing BirdGaze loader's expected
-pixel_std=200 convention.
+Each annotation has BirdGaze fields image, bbox, center, scale, joints,
+joints_vis. The four ordered joints are crown, left eye, right eye, and
+beak. Occluded points preserve their annotated coordinates, but use
+joints_vis=0; missing points use [-1, -1]. 'scale' is the longest bbox
+dimension divided by 200, before the existing loader's 1.25 padding.
 
-The converter does not generate train.json, val.json, test.json or
-occlusion-only annotation files.
+The audit manifest records matched image files, their SHA256, optional
+image-info paths, any original source path, and match method:
+- nightjar_uuid_sha256
+- sha256_original
+- supervisely_export
 
-Source files are untouched. Default mode **copies** each original image.
-Optional --materialize hardlink uses hardlinks within the same disk volume,
-but then the original and output file share bytes and must be treated as
-immutable. Use --skip-sizes-if-existing after an interrupted copy to resume.
-Use --verify-sha256 during audit for additional whole-file integrity
-verification (can require reading 100+ GB). Without this flag, source paths
-are checked by dimensions and database-recorded byte size. Hash restoration
-after path mismatch always verifies SHA-256.
+Expected annotation inputs based on the previous failed audit:
+- eBird: 50,447
+- NABirds: 48,562
+- Total: 99,009
 
-By default any rejection blocks the build. The --allow-partial option can
-produce a known incomplete subset and records all exclusions in reports;
-do not use it for the official complete dataset.
+The new export may have more or fewer files; compare actual counts.
+Any rejected annotation blocks the build by default.
 
-## Synthetic tests
+**Warning:** The converter cannot preserve eBird temporal identity when an
+exported UUID image has no verified original path. Do not construct temporal
+training sequences from UUID sorting; use only records with recovered video
+paths (or the authoritative Nightjar mapping).
+
+## Tests
+
+Two test modules cover original Nightjar-map mode and new full-export mode:
 
 ~~~powershell
-python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon_birdgaze.py" -v
+python -m unittest discover -s Bird_HKE/tools -p "test_build_annotatiathon*.py" -v
 ~~~
 
-Tests exercise exact ID mapping, source project isolation, original paths,
-occlusion preservation, source mismatch rejection, exact SHA-256 fallback,
-ambiguous duplicate images, audit-only behavior, and safe resumability.
-Actual E: drive media and the live PostgreSQL database must be checked by
-running the audit on the user's machine.
+These are synthetic fixtures. No access to the user's E: drive exists in this
+development environment, so the real dataset is not marked validated until
+the user's local audit has passed.
