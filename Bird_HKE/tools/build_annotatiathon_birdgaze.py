@@ -326,6 +326,9 @@ def cli() -> argparse.Namespace:
                         help="keep matched images with fixable annotation problems in images/, "
                              "save raw labels under pending_corrections/, and exclude them "
                              "from the valid BirdGaze training JSONs")
+    parser.add_argument("--use-corrected-annotations", action="store_true",
+                        help="use edited annotations from output/pending_corrections/annotations "
+                             "when available, without modifying Supervisely originals")
     parser.add_argument("--allow-partial", action="store_true",
                         help="allow building valid subset despite rejected annotations")
     parser.add_argument("--materialize", choices=("copy", "hardlink"), default="copy")
