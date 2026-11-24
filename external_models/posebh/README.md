@@ -113,6 +113,35 @@ To check **both** independent baseline models without starting training,
 use `bash smoke_both_birdgaze_baselines.sh FD` after the two environments
 are prepared. It runs tests and two GPU smoke tests sequentially.
 
+## Full training-path integration test before production
+
+Beyond the single-step `--smoke-test`, exercise a **throwaway two-epoch
+real-data training experiment** with real optimizer steps, validation, atomic
+checkpoint saving, complete resume and a second epoch after restoration:
+
+```bash
+$POSEBH_PY -m external_models.remaining_baselines.check_deps
+$POSEBH_PY -m external_models.remaining_baselines.test_training \
+  --model posebh-b --scenario FD
+```
+
+The integration probe uses 12 BirdGaze training and eight validation
+examples. Temporary weights live only in an isolated scratch namespace under
+`External_Baselines/_Training_Probes/`, then are cleaned automatically.
+It requires at least 5 GiB of available temporary storage and leaves the
+definitive `PoseBH_B/FD/seed_2026` directory untouched.
+
+Once both interpreters and pinned sources are ready, run the complete
+no-production-training qualification:
+
+```bash
+bash test_both_birdgaze_training.sh FD
+```
+
+This includes CPU unit tests, both sequential full-model GPU smoke tests and
+**both actual two-epoch optimizer/validation/checkpoint/resume probes**.
+No 100-epoch training is launched.
+
 ## Training commands (ONLY after both models pass smoke tests)
 
 ```bash
