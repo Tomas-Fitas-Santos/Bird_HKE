@@ -32,7 +32,8 @@ fetch_source() {
 }
 
 fetch_source rtmpose https://github.com/open-mmlab/mmpose.git 759b39c13fea6ba094afc1fa932f51dc1b11cbf9
-fetch_source vitposepp https://github.com/ViTAE-Transformer/ViTPose.git c050ed29112da7704797cc1a65af0234b525010d
+# Standard single-task ViTPose-B; leave any older vitposepp/ checkout untouched.
+fetch_source vitpose https://github.com/ViTAE-Transformer/ViTPose.git c050ed29112da7704797cc1a65af0234b525010d
 fetch_source posebh https://github.com/uyoung-jeong/PoseBH.git 8f03438f913b559edb0a2beed54e77d1560edba3
 
 echo "Upstream sources are pinned in $SOURCES."
