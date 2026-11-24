@@ -21,27 +21,29 @@ This is inter-annotator reliability measurement, **not** a new ground-truth
 gold-standard dataset. The event annotations are a useful third point of
 comparison but may contain errors of their own.
 
-## Allocation: doubled two-week plan
+## Allocation: proportional two-week plan (Tomás: 30 per day)
 
-| Annotator | Total assignments | Per week | Approx/day over 14 days |
+| Annotator | Total assignments | Per week | Per day over 14 days |
 | --- | ---: | ---: | ---: |
-| Paulo Lobato Correia | 200 | 100 | 14.3 |
-| Ricardo Araújo | 400 | 200 | 28.6 |
-| Luís Almeida | 200 | 100 | 14.3 |
-| Tomás Santos | 600 | 300 | 42.9 |
-| Riccardo Rocchi | 1,000 | 500 | 71.4 |
-| Filippo Bertozzo | 800 | 400 | 57.1 |
-| Romain David | 400 | 200 | 28.6 |
-| Miguel Marx | 400 | 200 | 28.6 |
-| Victor Carvalho | 400 | 200 | 28.6 |
-| **Total** | **4,400** | **2,200** | **314.3** |
+| Paulo Lobato Correia | 140 | 70 | 10 |
+| Ricardo Araújo | 280 | 140 | 20 |
+| Luís Almeida | 140 | 70 | 10 |
+| Tomás Santos | 420 | 210 | 30 |
+| Riccardo Rocchi | 700 | 350 | 50 |
+| Filippo Bertozzo | 560 | 280 | 40 |
+| Romain David | 280 | 140 | 20 |
+| Miguel Marx | 280 | 140 | 20 |
+| Victor Carvalho | 280 | 140 | 20 |
+| **Total** | **3,080** | **1,540** | **220** |
 
-Total: **2,200 different images × 2 independent people per image**.
+Total: **1,540 different images × 2 independent people per image = 3,080 assignments**.
 
-If Tomás is actually limited to **30 images/day**, 14 days permits 420
-rather than 600; if everyone else stays on double quotas, the adjusted
-study is 4,220 assignments / 2,110 unique images. Pass
-`--tomas-daily-cap 30` to select that plan.
+The default quotas scale the original stated availability by **1.4×**.
+Tomás's 300 original assignments become 420 over 14 days (30/day); every
+other person's allocation is scaled by the same factor. The previous
+2× plan is still available with `--quota-scale 2` but is **not** the default.
+Suggested weekly quotas are included in the assignment CSV, with flexible
+completion timing.
 
 ## Inputs
 
@@ -84,8 +86,8 @@ python -u Bird_HKE/tools/build_interannotator_sample.py
 
 Default **eBird only** focuses on the requested diverse video poses.
 To include 20% labeled NABirds photos, use `--nabirds-share 0.20`
-during both dry-run and build. E.g. 1,760 eBird frames and 440 NABirds
-photos in the standard 2,200-image plan. The sample still requires exactly
+during both dry-run and build. E.g. 1,232 eBird frames and 308 NABirds
+photos in the default 1,540-image plan. The sample still requires exactly
 two reviewers for every selected image.
 
 If the eBird sample cannot satisfy the strict pose/video constraints,
