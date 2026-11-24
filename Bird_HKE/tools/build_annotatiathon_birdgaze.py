@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Create BirdGaze eBird and NABirds datasets from the 2026 Annotatiathon.
 
-The source media remain untouched. UUID-named Supervisely JSONs are mapped
-through Nightjar's media_assets.id -> media_assets.relative_path inventory.
-Do not use image dimensions or filename order to guess annotation identity.
+The source media remain untouched. New full Supervisely exports with ann/img/
+img_info are matched directly. The exported file hashes recover original paths
+when possible; the Nightjar media map remains an optional legacy mode.
 
-Requirements: Python 3.10+, Pillow. First export a READ-ONLY media map from
-the original Nightjar PostgreSQL DB; see ANNOTATIATHON_BIRDGAZE.md.
+Requirements: Python 3.10+, Pillow. See ANNOTATIATHON_BIRDGAZE.md.
 """
 from __future__ import annotations
 
@@ -31,6 +30,8 @@ DEFAULT_EBIRD_IMAGES = r"E:\Official-Annotatiathon-Dataset\Official Annotatiatho
 DEFAULT_NABIRDS_IMAGES = r"E:\BirdGaze_v2\BirdGaze_Full_Dataset\images\NABirds"
 DEFAULT_OUTPUT = r"E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026"
 DEFAULT_MEDIA_MAP = r"E:\Annotatiathon 2026\Nightjar_media_asset_map.csv"
+DEFAULT_EBIRD_EXPORT = r"E:\Annotatiathon 2026\Nightjar_Annotatiathon_eBird_videos"
+DEFAULT_NABIRDS_EXPORT = r"E:\Annotatiathon 2026\Nightjar_Annotatiathon_NABirds"
 
 MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 ANNOTATION_NAME = re.compile(
@@ -303,6 +304,18 @@ def cli() -> argparse.Namespace:
     parser.add_argument("--ebird-images", type=Path, default=DEFAULT_EBIRD_IMAGES)
     parser.add_argument("--nabirds-images", type=Path, default=DEFAULT_NABIRDS_IMAGES)
     parser.add_argument("--media-map", type=Path, default=DEFAULT_MEDIA_MAP)
+    parser.add_argument("--ebird-export", type=Path, default=DEFAULT_EBIRD_EXPORT,
+                        help="new eBird export containing img/, img_info/ and optionally ann/")
+    parser.add_argument("--nabirds-export", type=Path, default=DEFAULT_NABIRDS_EXPORT,
+                        help="new NABirds export containing img/, img_info/ and optionally ann/")
+    parser.add_argument("--source-mode", choices=("auto", "exports", "nightjar-map"), default="auto",
+                        help="auto uses new Supervisely image exports if both are present")
+    parser.add_argument("--no-original-lookup", action="store_true",
+                        help="convert directly from exported UUID images; skip hash recovery of old paths")
+    parser.add_argument("--require-original-paths", action="store_true",
+                        help="reject any image whose original species/video/frame path cannot be restored")
+    parser.add_argument("--ignore-nightjar-map", action="store_true",
+                        help="do not use an existing Nightjar mapping CSV, matching originals by SHA256 only")
     parser.add_argument("--ebird-project-id", default="386759")
     parser.add_argument("--nabirds-project-id", default="386817")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -450,7 +463,17 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     try:
-        return run(cli())
+        args = cli()
+        export_available = args.ebird_export.is_dir() and args.nabirds_export.is_dir()
+        if args.source_mode == "exports" or (args.source_mode == "auto" and export_available):
+            from build_annotatiathon_exports import build_from_exports
+            return build_from_exports(args)
+        if args.source_mode == "auto" and not args.media_map.is_file():
+            raise ValueError(
+                "Supervisely export directories were not both found, and the Nightjar mapping CSV "
+                "is absent. Supply --ebird-export and --nabirds-export with actual folders."
+            )
+        return run(args)
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
