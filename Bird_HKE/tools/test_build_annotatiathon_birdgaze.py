@@ -89,6 +89,7 @@ class ConverterTests(unittest.TestCase):
             writer.writerows(self.rows)
         return subprocess.run([
             sys.executable, str(SCRIPT),
+            "--source-mode", "nightjar-map",
             "--ebird-ann", str(self.ebird_ann),
             "--nabirds-ann", str(self.nabirds_ann),
             "--ebird-images", str(self.ebird_images),
@@ -115,7 +116,7 @@ class ConverterTests(unittest.TestCase):
         with (self.out / "reports/manifest.csv").open(newline="", encoding="utf-8-sig") as f:
             records = list(csv.DictReader(f))
         self.assertEqual(len(records), 2)
-        self.assertTrue(all(r["match_method"] == "nightjar_media_asset_id" for r in records))
+        self.assertTrue(all(r["match_method"] == "nightjar_asset_relative_path" for r in records))
 
     def test_all_occluded_preserved(self):
         self.add_one(all_occluded=True)
