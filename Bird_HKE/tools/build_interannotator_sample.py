@@ -420,10 +420,13 @@ def export(args, selected, pairs, quotas, capacities, coverage):
             copy_image(src, dest, args.materialize)
             save_json(person_dir / "ann" / (filename + ".json"), ann)
             quota_done[person] += 1
+            # Week allocation is a suggested pacing target, not a restriction
+            # on the order in which people may complete their images.
+            week = 1 if quota_done[person] <= (quotas[person] + 1) // 2 else 2
             assignment_rows.append({
                 "sample_id": sample_id, "annotator": person,
                 "dataset_name": dataset_slug, "image_filename": filename,
-                "status": "assigned",
+                "suggested_week": week, "status": "assigned",
             })
         if n % 250 == 0:
             print(f"  Exported {n:,}/{len(selected):,} doubly assigned images", flush=True)
@@ -435,7 +438,8 @@ def export(args, selected, pairs, quotas, capacities, coverage):
     ))
     save_json(out_private / "event_reference_annotations.json", private_records)
     save_csv(out_report / "assignments.csv", assignment_rows, (
-        "sample_id", "annotator", "dataset_name", "image_filename", "status",
+        "sample_id", "annotator", "dataset_name", "image_filename",
+        "suggested_week", "status",
     ))
     save_csv(out_report / "workloads.csv", [
         {"annotator": person, "assigned": quota_done[person],
