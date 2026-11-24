@@ -54,7 +54,7 @@ def annotation_files(export_root: Path, older_ann: Path) -> list[Path]:
 
 
 class ExportInventory:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, allow_empty: bool = False):
         self.root = root
         self.by_relative: dict[tuple[Path, str], Path] = {}
         self.by_basename: dict[str, list[Path]] = collections.defaultdict(list)
@@ -76,7 +76,7 @@ class ExportInventory:
             for info_file in info_dir.rglob("*.json"):
                 self.info_by_basename[info_file.name.casefold()].append(info_file)
         self.count = sum(len(files) for files in self.by_basename.values())
-        if not self.count:
+        if not self.count and not allow_empty:
             raise FileNotFoundError(f"no Supervisely-exported images in {root}")
 
     def locate_image(self, annotation: Path) -> Path:
@@ -197,12 +197,20 @@ def build_from_exports(args) -> int:
     stats = collections.Counter()
 
     for label, export_root, old_ann_root, original_root, project in sources:
-        inventory = ExportInventory(export_root)
         annotations = annotation_files(export_root, old_ann_root)
+        inventory = ExportInventory(export_root, allow_empty=not annotations)
         stats[f"{label}_annotation_files"] = len(annotations)
         stats[f"{label}_exported_images"] = inventory.count
         print(f"Scanning {label}: {len(annotations):,} annotation JSONs, "
               f"{inventory.count:,} exported images", flush=True)
+        if not annotations:
+            if inventory.count:
+                raise ValueError(
+                    f"{label} export contains {inventory.count:,} images but no annotation JSONs; "
+                    "verify the ann/ directory or the older --ebird-ann/--nabirds-ann path"
+                )
+            print(f"  {label}: no annotations or exported images in this source; skipping", flush=True)
+            continue
 
         # Stage 1: pair annotation JSON to exported image by exact filename
         # and verify its image-info SHA-256 (when available).
