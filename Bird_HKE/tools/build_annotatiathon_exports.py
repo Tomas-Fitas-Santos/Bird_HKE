@@ -243,7 +243,16 @@ def build_from_exports(args) -> int:
                 # objects[] as intentionally unannotated rather than invalid.
                 # Never silently skip nonempty/incomplete/malformed annotations.
                 image_path = inventory.locate_image(annotation_path)
-                with annotation_path.open("r", encoding="utf-8-sig") as f:
+                review_override = (output / "pending_corrections" / "annotations" /
+                                   label / annotation_path.name)
+                effective_annotation = (
+                    review_override
+                    if args.use_corrected_annotations and review_override.is_file()
+                    else annotation_path
+                )
+                if effective_annotation != annotation_path:
+                    stats[f"{label}_correction_overlays_loaded"] += 1
+                with effective_annotation.open("r", encoding="utf-8-sig") as f:
                     annotation = json.load(f)
                 if (isinstance(annotation, dict)
                         and annotation.get("objects") == []
@@ -274,7 +283,8 @@ def build_from_exports(args) -> int:
                 uuid_match = ANNOTATION_NAME.fullmatch(annotation_path.name)
                 uid = uuid_match.group("uuid").lower() if uuid_match else ""
                 candidates.append({
-                    "ann": annotation_path, "image": image_path, "info": info_path,
+                    "ann": effective_annotation, "original_ann": annotation_path,
+                    "image": image_path, "info": info_path,
                     "sha": image_sha, "size": image_size, "uuid": uid,
                 })
                 if not args.no_original_lookup and original_root.is_dir():
@@ -457,9 +467,11 @@ def build_from_exports(args) -> int:
         else:
             # These raw annotations are intentionally NOT written into the two
             # training JSONs. Keep editable, independent copies for correction.
-            put_media(Path(item["annotation_json"]),
-                      output / item["review_annotation"],
-                      "copy", args.skip_sizes_if_existing)
+            annotation_source = Path(item["annotation_json"])
+            annotation_target = output / item["review_annotation"]
+            if annotation_source.resolve() != annotation_target.resolve():
+                put_media(annotation_source, annotation_target,
+                          "copy", args.skip_sizes_if_existing)
             if item["review_image_info"]:
                 put_media(Path(item["image_info"]),
                           output / item["review_image_info"],
