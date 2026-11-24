@@ -12,7 +12,7 @@ from PIL import Image
 
 from build_interannotator_sample import (
     Frame, ORIGINAL_QUOTAS, pairing, pose_distance,
-    diversified_video_frames, main, image_annotation,
+    diversified_video_frames, main, image_annotation, parse, quotas_from_args,
 )
 import random
 
@@ -78,16 +78,32 @@ class ReannotationSampleTests(unittest.TestCase):
         ]):
             return main()
 
-    def test_doubled_quota_math_and_all_pairs_independent(self):
-        quotas = {person: q * 2 for person, q in ORIGINAL_QUOTAS.items()}
-        self.assertEqual(sum(quotas.values()), 4400)
-        self.assertEqual(sum(quotas.values()) // 2, 2200)
+    def test_default_two_week_30_per_day_quotas_and_independent_pairs(self):
+        with patch("sys.argv", ["build_interannotator_sample.py"]):
+            args = parse()
+        self.assertEqual(args.days, 14)
+        self.assertEqual(args.quota_scale, 1.4)
+        quotas = quotas_from_args(args)
+        expected = {
+            "Paulo Lobato Correia": 140,
+            "Ricardo Araújo": 280,
+            "Luís Almeida": 140,
+            "Tomás Santos": 420,
+            "Riccardo Rocchi": 700,
+            "Filippo Bertozzo": 560,
+            "Romain David": 280,
+            "Miguel Marx": 280,
+            "Victor Carvalho": 280,
+        }
+        self.assertEqual(quotas, expected)
+        self.assertEqual(sum(quotas.values()), 3080)
+        self.assertEqual(sum(quotas.values()) // 2, 1540)
+        self.assertEqual(quotas["Tomás Santos"] / args.days, 30)
         pairs = pairing(quotas, random.Random(20261124))
-        self.assertEqual(len(pairs), 2200)
+        self.assertEqual(len(pairs), 1540)
         self.assertTrue(all(a != b for a, b in pairs))
         assigned = Counter(person for pair in pairs for person in pair)
         self.assertEqual(assigned, Counter(quotas))
-        self.assertEqual(quotas["Tomás Santos"], 600)
 
     def test_farthest_pose_picks_with_frame_gap(self):
         records = [self.add_frame(number=i, pose_shift=i * 2) for i in range(8)]
