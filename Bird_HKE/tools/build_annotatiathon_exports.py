@@ -194,6 +194,7 @@ def build_from_exports(args) -> int:
     reports.mkdir(parents=True, exist_ok=True)
     accepted = []
     rejected = []
+    skipped_unannotated = []
     stats = collections.Counter()
 
     for label, export_root, old_ann_root, original_root, project in sources:
@@ -218,7 +219,23 @@ def build_from_exports(args) -> int:
         wanted: dict[int, set[str]] = collections.defaultdict(set)
         for n, annotation_path in enumerate(annotations, 1):
             try:
+                # Even an unannotated Supervisely image has an ann/*.json file.
+                # Confirm that its exported image exists, then classify an empty
+                # objects[] as intentionally unannotated rather than invalid.
+                # Never silently skip nonempty/incomplete/malformed annotations.
                 image_path = inventory.locate_image(annotation_path)
+                with annotation_path.open("r", encoding="utf-8-sig") as f:
+                    annotation = json.load(f)
+                if (isinstance(annotation, dict)
+                        and annotation.get("objects") == []
+                        and not annotation.get("labels")):
+                    skipped_unannotated.append({
+                        "source": label,
+                        "annotation_file": str(annotation_path),
+                        "reason": "empty_supervisely_objects",
+                    })
+                    stats[f"{label}_skipped_unannotated"] += 1
+                    continue
                 info_path = inventory.locate_info(annotation_path)
                 img_info = {}
                 if info_path is not None:
@@ -335,27 +352,32 @@ def build_from_exports(args) -> int:
             "nabirds": stats["NABirds_annotation_files"],
         },
         "accepted": len(accepted),
+        "skipped_unannotated": len(skipped_unannotated),
         "rejected": len(rejected),
         "statistics": dict(stats),
         "source_mode": "supervisely_exports",
         "image_info_hash_scheme": "base64(sha256(file_content))",
-        "note": "UUID-based export images are valid BirdGaze sources; without exact original mapping, their video temporal identity remains unknown.",
+        "note": "Unannotated images with empty objects[] are skipped; nonempty but invalid annotations remain rejected. UUID-based export images without exact original mapping have unknown temporal identity.",
     }
     write_json(reports / "validation_report.json", summary)
     with (reports / "rejected_annotations.csv").open("w", newline="", encoding="utf-8-sig") as f:
         wr = csv.DictWriter(f, fieldnames=("source", "annotation_file", "reason"))
         wr.writeheader()
         wr.writerows(rejected)
+    with (reports / "skipped_unannotated.csv").open("w", newline="", encoding="utf-8-sig") as f:
+        wr = csv.DictWriter(f, fieldnames=("source", "annotation_file", "reason"))
+        wr.writeheader()
+        wr.writerows(skipped_unannotated)
     with (reports / "manifest.csv").open("w", newline="", encoding="utf-8-sig") as f:
         wr = csv.DictWriter(f, fieldnames=OUTPUT_COLUMNS)
         wr.writeheader()
         for entry in accepted:
             wr.writerow({k: entry[k] for k in OUTPUT_COLUMNS})
 
-    print(f"Audit: {len(accepted):,} matched, {len(rejected):,} rejected "
-          f"(reports in {reports})", flush=True)
+    print(f"Audit: {len(accepted):,} matched, {len(skipped_unannotated):,} unannotated/skipped, "
+          f"{len(rejected):,} rejected (reports in {reports})", flush=True)
     for source_label in ("eBird", "NABirds"):
-        for k in ("accepted", "rejected", "match_nightjar_uuid_sha256",
+        for k in ("accepted", "skipped_unannotated", "rejected", "match_nightjar_uuid_sha256",
                   "match_sha256_original", "match_supervisely_export"):
             print(f"  {source_label} {k}: {stats[source_label + '_' + k]:,}", flush=True)
 
