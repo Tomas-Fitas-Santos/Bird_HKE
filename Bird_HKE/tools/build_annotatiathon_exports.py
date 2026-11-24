@@ -25,7 +25,25 @@ from build_annotatiathon_birdgaze import (
 OUTPUT_COLUMNS = (
     "source", "annotation_json", "export_image", "image_info", "image",
     "match_method", "sha256", "original_path", "visible", "occluded",
+    "annotation_status", "review_reason",
 )
+PENDING_COLUMNS = (
+    "source", "image", "annotation_json", "export_image", "image_info",
+    "original_path", "match_method", "sha256", "reason",
+    "review_annotation", "review_image_info", "status",
+)
+
+
+def is_reviewable_annotation_issue(reason: str) -> bool:
+    """Only issues in annotated labels are reviewable, never bad image pairings."""
+    return (
+        reason.startswith("duplicate keypoint: ")
+        or reason.startswith("expected 1 bird bounding box, got ")
+        or reason == "no head keypoints annotated"
+        or reason == "annotation width does not match original image"
+        or reason == "annotation height does not match original image"
+    )
+
 UUID_RX = re.compile(
     r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
@@ -193,6 +211,7 @@ def build_from_exports(args) -> int:
     reports = output / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     accepted = []
+    pending_corrections = []
     rejected = []
     skipped_unannotated = []
     stats = collections.Counter()
@@ -322,7 +341,39 @@ def build_from_exports(args) -> int:
                 with annotation_path.open("r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
                 # Exported annotation must match the SAME exported pixel matrix.
-                rec, nv, no, w, h = convert_supervisely(raw, dest_name, exported, {})
+                try:
+                    rec, nv, no, w, h = convert_supervisely(raw, dest_name, exported, {})
+                except ValueError as exc:
+                    # Retain genuinely annotated media even when a manual correction
+                    # is needed. Never present bad labels as supervised training data.
+                    if not (args.retain_annotation_issues
+                            and is_reviewable_annotation_issue(str(exc))):
+                        raise
+                    if not uid:
+                        raise ValueError(
+                            "Cannot retain annotation issue with an unrecognized image UUID"
+                        ) from exc
+                    review_ann = (PurePosixPath("pending_corrections") /
+                                  "annotations" / label / (exported.name + ".json")).as_posix()
+                    review_info = (
+                        (PurePosixPath("pending_corrections") / "image_info" /
+                         label / (exported.name + ".json")).as_posix()
+                        if candidate["info"] else ""
+                    )
+                    pending_corrections.append({
+                        "source": label, "annotation_json": str(annotation_path),
+                        "export_image": str(exported),
+                        "image_info": str(candidate["info"] or ""),
+                        "original_path": str(physical) if method != "supervisely_export" else "",
+                        "image": dest_name, "source_file": physical,
+                        "match_method": method, "sha256": digest,
+                        "reason": str(exc), "review_annotation": review_ann,
+                        "review_image_info": review_info, "status": "pending_correction",
+                        "annotation_status": "pending_correction", "review_reason": str(exc),
+                    })
+                    reserved_paths.add(dest_name.casefold())
+                    stats[f"{label}_pending_corrections"] += 1
+                    continue
                 # For original byte-identical matches, dimensions necessarily agree.
                 accepted.append({
                     "source": label, "annotation_json": str(annotation_path),
@@ -331,6 +382,7 @@ def build_from_exports(args) -> int:
                     "image": dest_name, "record": rec, "source_file": physical,
                     "match_method": method, "sha256": digest,
                     "visible": nv, "occluded": no, "width": w, "height": h,
+                    "annotation_status": "valid", "review_reason": "",
                 })
                 reserved_paths.add(dest_name.casefold())
                 stats[f"{label}_accepted"] += 1
@@ -352,12 +404,13 @@ def build_from_exports(args) -> int:
             "nabirds": stats["NABirds_annotation_files"],
         },
         "accepted": len(accepted),
+        "pending_corrections": len(pending_corrections),
         "skipped_unannotated": len(skipped_unannotated),
         "rejected": len(rejected),
         "statistics": dict(stats),
         "source_mode": "supervisely_exports",
         "image_info_hash_scheme": "base64(sha256(file_content))",
-        "note": "Unannotated images with empty objects[] are skipped; nonempty but invalid annotations remain rejected. UUID-based export images without exact original mapping have unknown temporal identity.",
+        "note": "Unannotated images are excluded; permitted annotation-only issues can retain images and raw JSONs under pending_corrections, but are omitted from training labels. Non-label matching or integrity errors remain rejected.",
     }
     write_json(reports / "validation_report.json", summary)
     with (reports / "rejected_annotations.csv").open("w", newline="", encoding="utf-8-sig") as f:
@@ -371,13 +424,19 @@ def build_from_exports(args) -> int:
     with (reports / "manifest.csv").open("w", newline="", encoding="utf-8-sig") as f:
         wr = csv.DictWriter(f, fieldnames=OUTPUT_COLUMNS)
         wr.writeheader()
-        for entry in accepted:
-            wr.writerow({k: entry[k] for k in OUTPUT_COLUMNS})
+        for entry in accepted + pending_corrections:
+            wr.writerow({k: entry.get(k, "") for k in OUTPUT_COLUMNS})
+    with (reports / "pending_corrections.csv").open("w", newline="", encoding="utf-8-sig") as f:
+        wr = csv.DictWriter(f, fieldnames=PENDING_COLUMNS)
+        wr.writeheader()
+        for entry in pending_corrections:
+            wr.writerow({k: entry.get(k, "") for k in PENDING_COLUMNS})
 
-    print(f"Audit: {len(accepted):,} matched, {len(skipped_unannotated):,} unannotated/skipped, "
+    print(f"Audit: {len(accepted):,} valid, {len(pending_corrections):,} pending correction, "
+          f"{len(skipped_unannotated):,} unannotated/skipped, "
           f"{len(rejected):,} rejected (reports in {reports})", flush=True)
     for source_label in ("eBird", "NABirds"):
-        for k in ("accepted", "skipped_unannotated", "rejected", "match_nightjar_uuid_sha256",
+        for k in ("accepted", "pending_corrections", "skipped_unannotated", "rejected", "match_nightjar_uuid_sha256",
                   "match_sha256_original", "match_supervisely_export"):
             print(f"  {source_label} {k}: {stats[source_label + '_' + k]:,}", flush=True)
 
@@ -386,25 +445,42 @@ def build_from_exports(args) -> int:
     if rejected and not args.allow_partial:
         print("Build blocked by rejected records; inspect rejected_annotations.csv", file=sys.stderr)
         return 2
-    if not accepted:
-        raise ValueError("no valid annotation/image pairs")
+    if not accepted and not pending_corrections:
+        raise ValueError("no valid or pending-correction annotation/image pairs")
     outputs: dict[str, list[dict]] = {"eBird": [], "NABirds": []}
-    for n, item in enumerate(accepted, 1):
+    all_media = accepted + pending_corrections
+    for n, item in enumerate(all_media, 1):
         put_media(item["source_file"], output / "images" / item["image"],
                   args.materialize, args.skip_sizes_if_existing)
-        outputs[item["source"]].append(item["record"])
+        if item["annotation_status"] == "valid":
+            outputs[item["source"]].append(item["record"])
+        else:
+            # These raw annotations are intentionally NOT written into the two
+            # training JSONs. Keep editable, independent copies for correction.
+            put_media(Path(item["annotation_json"]),
+                      output / item["review_annotation"],
+                      "copy", args.skip_sizes_if_existing)
+            if item["review_image_info"]:
+                put_media(Path(item["image_info"]),
+                          output / item["review_image_info"],
+                          "copy", args.skip_sizes_if_existing)
         if n % 10000 == 0:
-            print(f"  Copied or linked {n:,}/{len(accepted):,}", flush=True)
+            print(f"  Materialized {n:,}/{len(all_media):,} images", flush=True)
     annot = output / "annot"
     annot.mkdir(parents=True, exist_ok=True)
     for label, dest in (("eBird", "ebird.json"), ("NABirds", "nabirds.json")):
         write_json(annot / dest, outputs[label])
     summary.update({
         "state": "BUILT",
-        "images_materialized": len(accepted),
+        "images_materialized": len(all_media),
+        "valid_training_images": len(accepted),
+        "pending_review_images_materialized": len(pending_corrections),
+        "raw_pending_annotations_preserved": len(pending_corrections),
         "annotation_counts": {"ebird.json": len(outputs["eBird"]),
                               "nabirds.json": len(outputs["NABirds"])},
     })
     write_json(reports / "validation_report.json", summary)
-    print(f"Built {len(accepted):,} images and exactly ebird.json, nabirds.json", flush=True)
+    print(f"Built {len(all_media):,} images: {len(accepted):,} validated for training, "
+          f"{len(pending_corrections):,} retained with raw annotations for correction; "
+          "exactly ebird.json and nabirds.json are training labels", flush=True)
     return 0
