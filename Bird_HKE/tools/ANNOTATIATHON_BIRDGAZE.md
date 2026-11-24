@@ -137,6 +137,7 @@ BirdGaze_Annotatiathon_2026/
   reports/
     validation_report.json
     rejected_annotations.csv
+    skipped_unannotated.csv
     manifest.csv
 ~~~
 
@@ -145,6 +146,32 @@ joints_vis. The four ordered joints are crown, left eye, right eye, and
 beak. Occluded points preserve their annotated coordinates, but use
 joints_vis=0; missing points use [-1, -1]. 'scale' is the longest bbox
 dimension divided by 200, before the existing loader's 1.25 padding.
+
+Unannotated images are normal in a Supervisely export: an image can have an
+`ann/*.json` file with `"objects": []` even though no one labeled it.
+The new export builder classifies these as **skipped_unannotated**, not
+rejected. Their images are not copied to the training dataset. Only verified
+nonempty annotations produce BirdGaze records. Nonempty but incomplete,
+malformed or inconsistent annotations are still **rejected** and block the
+official build. The audit reconciles
+`accepted + skipped_unannotated + rejected = annotation_files`.
+
+Use the following command to quickly inspect the last run's rejection
+categories before re-running the full original-image SHA-256 scan:
+
+~~~powershell
+$report = "E:\Annotatiathon 2026\BirdGaze_Annotatiathon_2026\reports\rejected_annotations.csv"
+Import-Csv $report | Group-Object source, reason |
+    Sort-Object Count -Descending | Select-Object -First 25 Count, Name |
+    Format-Table -AutoSize -Wrap
+~~~
+
+The next audit prints `matched`, `unannotated/skipped`, and `rejected`.
+Outputs include `reports/skipped_unannotated.csv` as well as
+`reports/rejected_annotations.csv`. If genuine rejections remain, inspect
+them before building. The `--no-original-lookup` option allows a faster
+annotation-classification-only audit, but does not restore eBird video paths.
+Do a full audit without that option before building the temporal dataset.
 
 The audit manifest records matched image files, their SHA256, optional
 image-info paths, any original source path, and match method:
@@ -158,7 +185,8 @@ Expected annotation inputs based on the previous failed audit:
 - Total: 99,009
 
 The new export may have more or fewer files; compare actual counts.
-Any rejected annotation blocks the build by default.
+**Unannotated images are skipped and do not block building.**
+Any rejected nonempty annotation still blocks the build by default.
 
 **Warning:** The converter cannot preserve eBird temporal identity when an
 exported UUID image has no verified original path. Do not construct temporal
