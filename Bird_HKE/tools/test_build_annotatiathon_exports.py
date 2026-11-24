@@ -199,6 +199,53 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("no Supervisely-exported images", result.stderr)
 
+    def test_unannotated_nabirds_is_skipped_not_rejected(self):
+        self.make_one(source="eBird")
+        self.make_one(source="NABirds")
+        empty_file = (self.export_n / "Complete video library · all species" / "ann" /
+                      (UUID_N + ".jpg.json"))
+        payload = json.loads(empty_file.read_text(encoding="utf-8"))
+        payload["objects"] = []
+        empty_file.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.read_annotation("ebird")), 1)
+        self.assertEqual(len(self.read_annotation("nabirds")), 0)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["accepted"], 1)
+        self.assertEqual(report["skipped_unannotated"], 1)
+        self.assertEqual(report["rejected"], 0)
+        with (self.output / "reports" / "skipped_unannotated.csv").open(
+                newline="", encoding="utf-8-sig") as handle:
+            skipped = list(csv.DictReader(handle))
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["source"], "NABirds")
+        self.assertEqual(skipped[0]["reason"], "empty_supervisely_objects")
+
+    def test_only_empty_annotations_can_be_skipped(self):
+        self.make_one(source="eBird")
+        filename = (self.export_e / "Complete video library · all species" /
+                    "ann" / (UUID_E + ".jpg.json"))
+        payload = json.loads(filename.read_text(encoding="utf-8"))
+        payload["objects"] = [payload["objects"][0]]  # box only, no keypoints
+        filename.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.run_build("--audit-only")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["skipped_unannotated"], 0)
+        self.assertEqual(report["rejected"], 1)
+
+    def test_malformed_annotation_is_rejected_not_skipped(self):
+        self.make_one(source="eBird")
+        filename = (self.export_e / "Complete video library · all species" /
+                    "ann" / (UUID_E + ".jpg.json"))
+        filename.write_text(json.dumps({"size": {"width": 80, "height": 60}}), encoding="utf-8")
+        result = self.run_build("--audit-only")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads((self.output / "reports" / "validation_report.json").read_text())
+        self.assertEqual(report["skipped_unannotated"], 0)
+        self.assertEqual(report["rejected"], 1)
+
     def test_partial_rejected_blocks(self):
         self.make_one(source="eBird")
         self.make_one(source="NABirds", bad_hash=True)
