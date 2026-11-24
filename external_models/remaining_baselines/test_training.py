@@ -12,6 +12,9 @@ automatically deleted after success/failure (unless killed by SIGKILL).
 """
 from __future__ import annotations
 
+import os
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 import argparse
 import gc
 import importlib
