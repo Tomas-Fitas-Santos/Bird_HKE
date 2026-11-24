@@ -123,6 +123,38 @@ $VIT_PY -m external_models.vitpose.train --scenario FD --smoke-test
 checks the signed crops, source/COCO counts, original model configuration
 and resume recipe inputs. It has no persistent output writes.
 
+## Full training-path test before 100 epochs
+
+The standard `--smoke-test` checks a real forward/backward and single optimizer
+step, but does **not** check the production epoch loop, validation selection
+or checkpoint restoration. For those, run the new **disposable two-epoch
+integration test** using only 12 real training images and 8 validation images:
+
+```bash
+$VIT_PY -m external_models.remaining_baselines.check_deps
+$VIT_PY -m external_models.remaining_baselines.test_training \
+  --model vitpose-b --scenario FD
+```
+
+The test calls the production training epoch and validation code, saves a
+complete real checkpoint, destroys the first model instance, restores the
+model/optimizer/scheduler/AMP/RNG state into a fresh instance, trains and
+validates one additional epoch, and verifies checkpoint/best-weight/history
+integrity. All large checkpoint files are temporary under the ignored
+`Bird_HKE/trained_models/External_Baselines/_Training_Probes/` path and
+are deleted when the test finishes. The definitive run path remains
+untouched. Make sure **at least 5 GiB of scratch disk is free**.
+
+To test both models in sequence (after preparing both separate venvs):
+
+```bash
+bash test_both_birdgaze_training.sh FD
+```
+
+This runs dependencies, CPU unit tests, the GPU smoke test and two-epoch
+training/resume probes sequentially. Do not launch production training if
+either probe fails.
+
 ## Training after smoke-test PASS
 
 ```bash
