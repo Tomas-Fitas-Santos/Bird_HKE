@@ -321,7 +321,7 @@ def image_annotation(size: tuple[int, int], bbox: tuple[float, float, float, flo
     return {
         "description": "",
         "tags": [],
-        "size": {"width": height if False else width, "height": height},
+        "size": {"width": width, "height": height},
         "objects": [{
             "classTitle": "bird",
             "description": "",
