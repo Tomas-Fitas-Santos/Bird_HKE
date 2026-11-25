@@ -1,0 +1,79 @@
+name: CPU validation - native models and comparison models
+
+# Everything in this workflow must pass on CPU with no GPU and no BirdGaze
+# download. It is the merge gate. Real GPU smoke checks and definitive
+# training are separate, explicitly gated steps documented in
+# comparison_models/README.md.
+on:
+  push:
+    branches:
+      - main
+      - chore/consolidate-native-comparison-models-20261125
+      - phase-1-reproducible-training
+      - phase-2-uncertainty-modeling
+      - phase-3-passive-uncertainty
+  pull_request:
+    branches:
+      - main
+      - phase-3-passive-uncertainty
+
+jobs:
+  native-research-models:
+    name: Native Bird_HKE research models
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet 'torch==2.7.1' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --quiet 'numpy<3' pyyaml yacs json_tricks scipy einops timm
+      - name: Compile the native package
+        run: python -m compileall -q Bird_HKE
+      - name: Run reproducibility, uncertainty, protocol and dataset tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  comparison-models:
+    name: External comparison models
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet 'torch==2.7.1' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --quiet 'numpy<3' opencv-python-headless pillow
+      - name: Compile all three comparison stacks and the shared package
+        run: python -m compileall -q comparison_models
+      - name: Validate every shell wrapper
+        run: |
+          bash -n setup_linux_training_env.sh
+          for script in comparison_models/scripts/*.sh; do bash -n "$script"; done
+      - name: Verify the unified CLI works without torch, GPU or MMPose
+        run: |
+          python -m comparison_models.cli list
+          python -m comparison_models.cli doctor
+      - name: Run layout, isolation and consolidation tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_consolidation.py' -v
+      - name: Run read-only preflight tests (RTMPose, ViTPose, PoseBH)
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_remaining_baseline_preflight.py' -v
+      - name: Run RTMPose-M CPU accumulation and dataset-preflight tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_rtmpose_*.py' -v
+      - name: Run BirdGaze conversion and crop-geometry tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_external_birdgaze_conversion.py' -v
+      - name: Run ViTPose-B CPU model, geometry and protocol tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_vitpose_b.py' -v
+      - name: Run PoseBH-B CPU model, prototype and protocol tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_posebh_b.py' -v
+      - name: Run training integration probe CPU contract tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_baseline_training_probe.py' -v

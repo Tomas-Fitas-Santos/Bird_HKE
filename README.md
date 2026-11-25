@@ -25,11 +25,38 @@ For path-level details and attribution, see `THIRD_PARTY_NOTICES.md`.
 
 ## Included in this repository
 
+The repository is organised into two clearly separated groups.
+
+1. **Original Bird_HKE research models** - `Bird_HKE/`: HRNet, HR_Mamba,
+   HR_MambaVision, HR_MambaViT and VHR-BirdPose, their uncertainty
+   implementations, training protocol, `experiments/` YAML configs and
+   `trained_models/` layout. Nothing in this group imports the second group.
+2. **External comparison models** - [`comparison_models/`](comparison_models/):
+   RTMPose-M, standard ViTPose-B and PoseBH-B (single-dataset adaptation). They
+   share only the BirdGaze preprocessing, keep independent implementations,
+   isolated environments and separate checkpoints, and nothing in this group
+   imports the research package at runtime.
+
+```bash
+python -m comparison_models.cli list          # the three models, envs, outputs
+python -m comparison_models.cli preflight --model all --scenario FD
+python -m comparison_models.cli test --model all --scenario FD
+```
+
+See [`comparison_models/README.md`](comparison_models/README.md) for the
+layout, the qualification procedure and the open GPU-validation gaps, and
+[`docs/MODEL_FAMILIES.md`](docs/MODEL_FAMILIES.md) for which model belongs to
+which group and why.
+
 - Core code under `Bird_HKE/`:
   - `main.py` for a single simulation
   - `run_all.py` for batch simulations
   - `tools/`, `lib/`, `models/`, `dataset/`
   - `experiments/` YAML configs and `run_config.json`
+- Comparison baselines under `comparison_models/`:
+  - `common/` shared BirdGaze data contract and training protocol
+  - `rtmpose/`, `vitpose/`, `posebh/` independent model stacks
+  - `cli.py`, `registry.py`, `scripts/`, `tests/`
 - Project-level setup files:
   - `requirements.txt`
   - `.gitignore`
@@ -332,6 +359,24 @@ python Bird_HKE/main.py \
 ```
 
 You can omit `--gt` for videos without ground-truth annotations.
+
+## 5) Run the test suites
+
+Both groups ship CPU-only regression tests that need no GPU and no dataset
+download:
+
+```bash
+# Original research models: protocol audit, reproducibility, uncertainty,
+# dataset visibility, stop-request handling.
+python -m unittest discover -s tests -v
+
+# External comparison models: layout/isolation, preflight, RTMPose-M,
+# BirdGaze conversion, ViTPose-B, PoseBH-B and the probe contracts.
+python -m unittest discover -s comparison_models/tests -t . -v
+```
+
+GPU-dependent checks are separate and explicitly gated; see
+[`comparison_models/README.md`](comparison_models/README.md).
 
 ## Expected local layout for running experiments
 
