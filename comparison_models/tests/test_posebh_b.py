@@ -115,6 +115,57 @@ class PoseBHModelTests(unittest.TestCase):
         self.assertIsNotNone(prediction.grad)
         self.assertGreater(float(prediction.grad.abs().sum()), 0.)
 
+    def test_trainer_loss_matches_model_loss_parts_and_metrics(self):
+        """The trainer must call the real model/loss API, not a stale one.
+
+        Guards against the consolidation regression where the trainer asked the
+        model for methods that never existed and for recipe keys the recipe
+        does not define, which only failed once real training started.
+        """
+        torch.manual_seed(2026)
+        model = self.make_small()
+        model.train()
+        image = torch.randn(1, 3, 256, 256)
+        target = torch.zeros(1, 4, 64, 64)
+        target[0, 0, 24, 24] = 1
+        target[0, 2, 30, 40] = 1
+        valid = torch.tensor([[1., 0., 1., 0.]])
+
+        trainer = PoseBHTrainer()
+        self.assertEqual(set(trainer.loss_parts),
+                         {"supervised", "prototype_mse",
+                          "prototype_contrast", "css"})
+        # Reference from the model's own combination, computed before the
+        # trainer's prototype EMA update changes the bank.
+        with torch.no_grad():
+            heatmaps, embedding = model(image)
+        reference, ref_parts = model.loss_parts(
+            heatmaps, embedding, target, valid, epoch=0)
+
+        before = model.prototypes.clone()
+        total, parts = trainer.loss(model, image, target, valid, epoch=0)
+        self.assertTrue(torch.isfinite(total))
+        self.assertEqual(set(parts), set(trainer.loss_parts))
+        self.assertTrue(all(torch.isfinite(value) for value in parts.values()))
+        self.assertAlmostEqual(float(total.detach()), float(reference), places=6)
+        for key, value in ref_parts.items():
+            self.assertAlmostEqual(float(parts[key].detach()), float(value), places=6)
+        # The prototype bank is refreshed from the batch, as upstream does.
+        self.assertFalse(torch.equal(model.prototypes, before))
+        total.backward()
+        self.assertIsNotNone(model.heatmap_head.weight.grad)
+
+    def test_recipe_refuses_pretrained_weights(self):
+        trainer = PoseBHTrainer()
+        trainer.ensure_recipe_is_from_scratch()  # must not raise
+        original = RECIPE["weights"]
+        try:
+            RECIPE["weights"] = "pretrained_vitpose_plus_plus"
+            with self.assertRaisesRegex(RuntimeError, "random weights"):
+                trainer.ensure_recipe_is_from_scratch()
+        finally:
+            RECIPE["weights"] = original
+
     def test_wrong_input_and_proto_shape_fail(self):
         model = self.make_small()
         with self.assertRaises(ValueError):
@@ -135,10 +186,32 @@ class PoseBHSharedDatasetTests(unittest.TestCase):
 @unittest.skipUnless(HAS_DEPS, "Requires torch, numpy, opencv")
 class PoseBHProtocolTests(unittest.TestCase):
     def test_schedule_and_gpu_busy_guard(self):
-        schedule = PoseBHTrainer().lr_multiplier
-        self.assertAlmostEqual(schedule(0), 0.1)
-        self.assertAlmostEqual(schedule(5), 1.)
-        self.assertAlmostEqual(schedule(100), 0.02)
+        from comparison_models.posebh.recipe import RECIPE
+        from comparison_models.common.training_utils import make_scheduler
+        import torch as _torch
+        optimizer = _torch.optim.SGD(
+            [_torch.nn.Parameter(torch.zeros(1))], lr=RECIPE["lr"])
+        iters_per_epoch = 100
+        scheduler = make_scheduler(RECIPE, optimizer,
+                                   iters_per_epoch=iters_per_epoch)
+        optimizer.step()
+        # Paper schedule: 500-iteration linear warmup from ratio 1e-3, then
+        # step decay at epochs 50 and 90 of 100.
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.001)
+        for _ in range(500):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], RECIPE["lr"])
+        for _ in range(50 * iters_per_epoch - 501):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], RECIPE["lr"])
+        scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.1)
+        for _ in range((90 - 50) * iters_per_epoch):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.01)
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
                    return_value=CompletedProcess([], 0, stdout="991\n", stderr="")):

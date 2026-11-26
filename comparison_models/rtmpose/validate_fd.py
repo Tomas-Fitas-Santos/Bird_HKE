@@ -178,7 +178,11 @@ def check_gpu(cfg, collected):
     poseloss = losses.get("loss_kpt")
     if poseloss is None or not torch.isfinite(poseloss).all():
         raise RuntimeError(f"RTMPose SimCC loss missing/nonfinite: {losses}")
-    opt = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
+    # Use the real config's optimizer settings so the preflight exercises the
+    # same lr/weight decay the MMEngine runner will use.
+    opt_cfg = dict(cfg.optim_wrapper.optimizer)
+    opt_cfg.pop("type", None)
+    opt = torch.optim.AdamW(model.parameters(), **opt_cfg)
     opt.zero_grad(set_to_none=True)
     poseloss.backward()
     grads = [

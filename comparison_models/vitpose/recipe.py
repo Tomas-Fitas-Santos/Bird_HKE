@@ -36,8 +36,27 @@ RECIPE = {
     "effective_batch": 64,
     "optimizer": "AdamW",
     "lr": 0.0005,
-    "weight_decay": 0.01,
-    "warmup_epochs": 5,
+    "weight_decay": 0.1,
+    "betas": [0.9, 0.999],
+    # Paper-faithful optimizer/schedule (ViTPose_base_simple_coco_256x192.py):
+    # LayerDecayOptimizerConstructor with 12 layers and rate 0.75, then
+    # linear warmup for 500 iterations at ratio 1e-3 followed by step decay
+    # at epochs 170 and 200 of 210. The milestones are scaled to this
+    # 100-epoch budget (170/210 -> 81, 200/210 -> 95); the epoch count itself
+    # is the one hyperparameter deliberately left to Bird_HKE.
+    "schedule": {
+        "type": "vit_layer_decay",
+        "num_layers": 12,
+        "layer_decay_rate": 0.75,
+    },
+    "lr_schedule": {
+        "type": "vit_step",
+        "warmup_iters": 500,
+        "warmup_ratio": 0.001,
+        "milestones_epochs": [81, 95],
+        "gamma": 0.1,
+    },
+    "warmup_epochs": 0,
     "min_lr": 0.00001,
     "gradient_clip_norm": 1.0,
     "mixed_precision": "fp16_grad_scaler",

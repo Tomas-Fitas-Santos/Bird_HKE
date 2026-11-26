@@ -166,10 +166,15 @@ either probe fails.
 $VIT_PY -m comparison_models.vitpose.train --scenario FD --train
 ```
 
-It trains from scratch for a maximum of 100 epochs with:
-seed 2026, AdamW `lr=0.0005, weight_decay=0.01`, 5-epoch warmup,
-cosine decay to `1e-5`, a physical microbatch of four, accumulated
+It trains from scratch for a maximum of 100 epochs with the ViTPose-B
+COCO recipe's optimizer and schedule: seed 2026, AdamW
+`lr=5e-4, betas=(0.9, 0.999), weight_decay=0.1` with layer-wise LR decay
+(`num_layers=12`, `layer_decay_rate=0.75`), 500-iteration linear warmup from
+ratio `1e-3`, then step decay at epochs 81 and 95 (the paper's `[170, 200]` of
+210 rescaled to this budget), a physical microbatch of four, accumulated
 effective batch 64, clipping at norm 1.0, FP16 AMP with dynamic scaler.
+See [docs/PAPER_FAITHFUL_PROTOCOL.md](../../docs/PAPER_FAITHFUL_PROTOCOL.md)
+for the full equivalence table and the deliberate deviations.
 The final partial accumulation group is normalized by its real sample count
 at each epoch boundary.  The best checkpoint is chosen **only on image
 validation PCK@0.05**, normalized by source `scale × 200`. Validation does

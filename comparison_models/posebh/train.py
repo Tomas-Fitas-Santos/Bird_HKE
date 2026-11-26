@@ -31,7 +31,6 @@ import numpy as np
 import torch
 
 from comparison_models.common.birdgaze.dataset import decode_image_coordinates
-from comparison_models.common.losses import masked_heatmap_mse
 from comparison_models.common.preflight import (
     ROOT, SCENARIOS, prepare, reserve, sha256,
 )
@@ -61,6 +60,9 @@ IMPLEMENTATION_FILES = (
 class PoseBHTrainer(SingleTaskTrainer):
     """PoseBH-B adapted to one BirdGaze scenario per run."""
 
+    #: Extra scalars reported by ``PoseBHBirdGazeB.loss_parts``.
+    loss_parts = ("supervised", "prototype_mse", "prototype_contrast", "css")
+
     def __init__(self):
         super().__init__(
             RECIPE, name="PoseBH-B (single-dataset adaptation)",
@@ -68,23 +70,26 @@ class PoseBHTrainer(SingleTaskTrainer):
             documentation="comparison_models/posebh/README.md")
 
     def ensure_recipe_is_from_scratch(self):
-        if RECIPE["backbone"]["pretrained"] is not None:
+        if RECIPE["backbone"].get("pretrained") is not None:
             raise RuntimeError("Pretrained weights must stay disabled")
+        if RECIPE["weights"] != "random_from_scratch_no_pretrained":
+            raise RuntimeError("PoseBH-B must initialize from random weights")
 
     def new_model(self):
         return PoseBHBirdGazeB()
 
     def loss(self, model, images, targets, weights, epoch):
-        prediction, features, part_features, assignments = model(images)
-        main = masked_heatmap_mse(prediction.float(), targets, weights)
-        aux = model.auxiliary_part_loss(
-            part_features.float(), targets, weights, assignments)
-        proto = model.prototype_loss(features.float(), part_features.float(),
-                                     assignments, epoch)
-        total = (main + RECIPE["loss"]["aux_weight"] * aux
-                 + RECIPE["loss"]["prototype_weight"] * proto)
-        return total, {"main": float(main), "aux": float(aux),
-                       "prototype": float(proto)}
+        # PoseBHBirdGazeB.forward returns (heatmaps, prototype_embedding).
+        # loss_parts owns the supervised/prototype-MSE/PPC+PPD/CSS combination
+        # and the epoch gate that enables the consistency term.
+        prediction, embedding = model(images)
+        total, parts = model.loss_parts(
+            prediction.float(), embedding.float(), targets, weights, epoch)
+        # Upstream PoseBH refreshes the prototype bank from the current batch
+        # inside the head's training forward. The update is @torch.no_grad()
+        # and touches only this model's buffers, so it stays with the loss.
+        model.update_prototypes(embedding.detach(), targets.detach())
+        return total, {key: value.detach() for key, value in parts.items()}
 
     def validation_heatmaps(self, model, images):
         return model(images)[0]
@@ -104,10 +109,12 @@ def get_trainer():
     return PoseBHTrainer()
 
 
-def training_epoch(model, optimizer, scaler, loader, dataset_size, epoch):
+def training_epoch(model, optimizer, scaler, loader, dataset_size, epoch,
+                   scheduler=None):
     """Module-level entry point used by the disposable integration probe."""
     return PoseBHTrainer().training_epoch(
-        model, optimizer, scaler, loader, dataset_size, epoch)
+        model, optimizer, scaler, loader, dataset_size, epoch,
+        scheduler=scheduler)
 
 
 @torch.no_grad()
@@ -130,18 +137,14 @@ def gpu_smoke(dataset, validation_dataset):
     if float(sample["weight"].sum()) <= 0:
         raise RuntimeError("Smoke batch has no labeled landmarks; select a supervised batch")
     with torch.autocast("cuda", dtype=torch.float16):
-        output, features, part_features, assignments = model(
-            sample["image"].cuda(non_blocking=True))
-        main = masked_heatmap_mse(
-            output.float(), sample["target"].cuda(non_blocking=True),
-            sample["weight"].cuda(non_blocking=True))
-        aux = model.auxiliary_part_loss(
-            part_features.float(), sample["target"].cuda(non_blocking=True),
-            sample["weight"].cuda(non_blocking=True), assignments)
-        proto = model.prototype_loss(
-            features.float(), part_features.float(), assignments, 0)
-        loss = (main + RECIPE["loss"]["aux_weight"] * aux
-                + RECIPE["loss"]["prototype_weight"] * proto)
+        output, embedding = model(sample["image"].cuda(non_blocking=True))
+        # Same loss combination and prototype EMA refresh used in training.
+        loss, parts = model.loss_parts(
+            output.float(), embedding.float(),
+            sample["target"].cuda(non_blocking=True),
+            sample["weight"].cuda(non_blocking=True), epoch=0)
+        model.update_prototypes(embedding.detach(),
+                                sample["target"].cuda(non_blocking=True))
     assert tuple(output.shape[1:]) == (4, 64, 64)
     if not torch.isfinite(loss):
         raise RuntimeError("Nonfinite PoseBH-B real-data smoke-test loss")
@@ -169,10 +172,13 @@ def gpu_smoke(dataset, validation_dataset):
             raise RuntimeError("PoseBH-B validation decoding produced invalid coordinates")
     print(f"GPU preflight PASS; model={sum(p.numel() for p in model.parameters()):,} "
           f"parameters, first loss={loss.item():.7f} "
-          f"(main={main.item():.7f} aux={aux.item():.7f} proto={proto.item():.7f})",
+          f"(supervised={parts['supervised'].item():.7f} "
+          f"proto_mse={parts['prototype_mse'].item():.7f} "
+          f"proto_ce={parts['prototype_contrast'].item():.7f} "
+          f"css={parts['css'].item():.7f})",
           flush=True)
-    del (model, optim, scaler, sample, output, features, part_features,
-         assignments, main, aux, proto, loss, validation, test_output, test_xy)
+    del (model, optim, scaler, sample, output, embedding, parts, loss,
+         validation, test_output, test_xy)
     peak_mib = torch.cuda.max_memory_allocated() / (1024 * 1024)
     elapsed = time.perf_counter() - smoke_start
     print(f"GPU smoke resource profile: peak_allocated_mib={peak_mib:.1f} "

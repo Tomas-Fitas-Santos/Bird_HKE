@@ -95,10 +95,12 @@ def get_trainer():
     return ViTPoseBTrainer()
 
 
-def training_epoch(model, optimizer, scaler, loader, dataset_size, epoch):
+def training_epoch(model, optimizer, scaler, loader, dataset_size, epoch,
+                   scheduler=None):
     """Module-level entry point used by the disposable integration probe."""
     return ViTPoseBTrainer().training_epoch(
-        model, optimizer, scaler, loader, dataset_size, epoch)
+        model, optimizer, scaler, loader, dataset_size, epoch,
+        scheduler=scheduler)
 
 
 @torch.no_grad()
@@ -115,7 +117,7 @@ def gpu_smoke(dataset, validation_dataset):
     smoke_start = time.perf_counter()
     model = ViTPoseB().cuda()
     optim = trainer.make_optimizer(model)
-    scaler = torch.amp.GradScaler("cuda", enabled=True)
+    scaler = trainer.make_grad_scaler()
     sample = next(iter(trainer.make_epoch_loader(dataset, epoch=0, train=True)))
     model.train()
     if float(sample["weight"].sum()) <= 0:

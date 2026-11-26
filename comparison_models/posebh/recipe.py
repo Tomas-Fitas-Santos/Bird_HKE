@@ -43,12 +43,31 @@ RECIPE = {
     "microbatch": 2,
     "effective_batch": 64,
     "optimizer": "AdamW",
-    "lr": 0.0005,
-    "weight_decay": 0.01,
-    "warmup_epochs": 5,
+    "lr": 0.001,
+    "weight_decay": 0.1,
+    "betas": [0.9, 0.999],
+    # Paper-faithful optimizer/schedule (configs/.../mdt/vitb_posebh.py):
+    # LayerDecayOptimizerConstructor with 12 layers and rate 0.75, linear
+    # warmup for 500 iterations at ratio 1e-3, then step decay at epochs 50
+    # and 90 of 100. Our budget is also 100 epochs, so the milestones are
+    # used unchanged.
+    "schedule": {
+        "type": "vit_layer_decay",
+        "num_layers": 12,
+        "layer_decay_rate": 0.75,
+    },
+    "lr_schedule": {
+        "type": "vit_step",
+        "warmup_iters": 500,
+        "warmup_ratio": 0.001,
+        "milestones_epochs": [50, 90],
+        "gamma": 0.1,
+    },
+    "warmup_epochs": 0,
     "min_lr": 0.00001,
     "gradient_clip_norm": 1.0,
     "amp": "fp16_scaler",
+    "grad_scaler_init_scale": 16384.0,
     "checkpoint_selection": "prototype_heatmap_source_normalized_PCK_at_0.05",
     "scientific_test": "independently_annotated_held_out_videos",
 }
