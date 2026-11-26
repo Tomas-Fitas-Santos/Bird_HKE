@@ -42,7 +42,7 @@ re-checked.
 | Gradient clip order | unscale → clip → step | same | unscale → clip → step | same | unscale → clip → step | same |
 | Epochs | 210 | **100** (exempt) | 210 | **100** (exempt) | 100 | 100 |
 | Effective batch | 512 (64 × 8 GPUs) | **64** (see below) | 512 (64 × 8 GPUs) | **64** | 1024 (128 × 8 GPUs) | **64** |
-| Seed | `21` | `2026` (Bird_HKE-wide) | `0` | `2026` | `0` | `2026` |
+| Seed | `21` (explicit in the config) | `2026` (Bird_HKE-wide) | upstream default | `2026` | upstream default | `2026` |
 
 ## Where the implementation lives
 
