@@ -35,9 +35,14 @@ A unit test checks both forward output and backward gradient parity against
 - Use a separate Python venv named `vitpose`; inherit existing Torch CUDA
   wheels in **read-only** system site-packages. No installation into the
   original Bird_HKE environment. No MMCV, MMPose or new CUDA downloads.
-- The launcher refuses to run when `nvidia-smi` reports any GPU compute PID.
-  That is a pre-start check; **coordinate cluster GPU scheduling as well**,
-  since new jobs may start after the check.
+- The launcher refuses to run when `nvidia-smi` reports a compute PID **on the
+  GPU assigned to it** (`CUDA_VISIBLE_DEVICES`), so a colleague using another
+  card on the same host does not block the run. That is a pre-start check;
+  **coordinate cluster GPU scheduling as well**, since new jobs may start after
+  the check. On hosts where `nvidia-smi` is unavailable (some login nodes ship
+  the driver without the monitoring utility) the check fails closed; set
+  `BIRD_HKE_SKIP_IDLE_GPU_CHECK=1` to proceed there, which records that you
+  accepted responsibility for coordinating GPU sharing manually.
 - It checks a pinned clean upstream ViTPose checkout and compares the
   official *single-task* backbone config, never fetching pretrained weights.
 - It fingerprints the source and converted FD/OS/CS annotations, upstream

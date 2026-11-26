@@ -214,7 +214,9 @@ class PoseBHProtocolTests(unittest.TestCase):
                                RECIPE["lr"] * 0.01)
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
-                   return_value=CompletedProcess([], 0, stdout="991\n", stderr="")):
+                   return_value=CompletedProcess([], 0,
+                                                 stdout="GPU-abc, 991\n",
+                                                 stderr="")):
             with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
                 require_idle_gpu()
 

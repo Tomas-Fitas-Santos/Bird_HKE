@@ -61,27 +61,89 @@ def ensure_isolated_runtime(marker: str, documentation: str):
             "Require exactly one visible CUDA GPU (set CUDA_VISIBLE_DEVICES)")
 
 
-def require_idle_gpu():
-    """Fail closed before allocating model CUDA memory if any compute PID exists.
+#: Opt-out for machines with no scheduler where the guard cannot be trusted,
+#: e.g. a login node whose nvidia-smi is missing or reports other GPUs.
+IDLE_GUARD_SKIP = "BIRD_HKE_SKIP_IDLE_GPU_CHECK"
 
-    This is a startup check, not a scheduler. It cannot stop another job from
-    starting subsequently. Coordinate Titan scheduling across researchers.
+
+def _visible_device_uuids():
+    """UUIDs of the CUDA devices this process is allowed to use.
+
+    ``CUDA_VISIBLE_DEVICES`` restricts torch, but ``nvidia-smi`` still reports
+    every GPU on the host, so the idle check must be filtered to the assigned
+    device(s) rather than the whole machine.
     """
     try:
         response = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid",
+            ["nvidia-smi", "--query-gpu=index,uuid",
              "--format=csv,noheader,nounits"],
             capture_output=True, check=True, text=True, timeout=15)
     except (FileNotFoundError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired):
+        return None
+    by_index = {}
+    for line in response.stdout.splitlines():
+        parts = [value.strip() for value in line.split(",")]
+        if len(parts) == 2 and parts[0].isdigit():
+            by_index[parts[0]] = parts[1]
+    requested = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not requested or not by_index:
+        return set(by_index.values()) or None
+    wanted = set()
+    for item in requested.split(","):
+        item = item.strip()
+        if item in by_index:
+            wanted.add(by_index[item])
+    return wanted or set(by_index.values())
+
+
+def _compute_apps():
+    """Return (uuid, pid) pairs for every running GPU compute process."""
+    response = subprocess.run(
+        ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
+         "--format=csv,noheader,nounits"],
+        capture_output=True, check=True, text=True, timeout=15)
+    pairs = []
+    for line in response.stdout.splitlines():
+        parts = [value.strip() for value in line.split(",")]
+        if len(parts) == 2 and parts[1].isdigit():
+            pairs.append((parts[0], parts[1]))
+    return pairs
+
+
+def require_idle_gpu():
+    """Fail closed before allocating model CUDA memory if the GPU is busy.
+
+    Only the device(s) selected by ``CUDA_VISIBLE_DEVICES`` are considered, so
+    a colleague working on another card of the same host does not block this
+    run. This is a startup check, not a scheduler: it cannot stop another job
+    from starting afterwards, so scheduling still needs human coordination.
+
+    On hosts where ``nvidia-smi`` is unavailable (some login nodes ship the
+    driver without the monitoring utility) the check cannot be performed. It
+    then fails closed unless ``BIRD_HKE_SKIP_IDLE_GPU_CHECK=1`` is set, which
+    records that the operator accepted responsibility for coordination.
+    """
+    if os.environ.get(IDLE_GUARD_SKIP) == "1":
+        print("Idle-GPU check skipped via "
+              f"{IDLE_GUARD_SKIP}=1; coordinate GPU sharing manually.",
+              flush=True)
+        return
+    try:
+        pairs = _compute_apps()
+    except (FileNotFoundError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired) as exc:
         raise RuntimeError(
-            "Cannot verify GPU is idle with nvidia-smi; refusing") from exc
-    busy = [value.strip() for value in response.stdout.splitlines()
-            if value.strip().isdigit()]
+            "Cannot verify GPU is idle with nvidia-smi; refusing. Set "
+            f"{IDLE_GUARD_SKIP}=1 to override on a host where nvidia-smi is "
+            "unavailable and GPU sharing is coordinated manually.") from exc
+    visible = _visible_device_uuids()
+    busy = sorted({pid for uuid, pid in pairs
+                   if visible is None or uuid in visible})
     if busy:
         raise RuntimeError(
-            "Another GPU compute process is running (PIDs: "
-            + ", ".join(busy) + "); refusing to interfere with it")
+            "Another GPU compute process is running on the assigned GPU "
+            "(PIDs: " + ", ".join(busy) + "); refusing to interfere with it")
 
 
 def set_determinism(seed: int):

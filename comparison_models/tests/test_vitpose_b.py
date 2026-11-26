@@ -1,5 +1,6 @@
 """Unit/synthetic regression tests for the independent standard ViTPose-B stack."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -193,8 +194,49 @@ class ViTPoseProtocolTests(unittest.TestCase):
     def test_gpu_busy_guard(self):
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
-                   return_value=CompletedProcess([], 0, stdout="284\n", stderr="")):
+                   return_value=CompletedProcess([], 0,
+                                                 stdout="GPU-abc, 284\n",
+                                                 stderr="")):
             with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
+                require_idle_gpu()
+
+    def test_gpu_busy_guard_ignores_other_visible_gpus(self):
+        from subprocess import CompletedProcess
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            if any("index,uuid" in part for part in cmd):
+                return CompletedProcess([], 0,
+                                        stdout="0, GPU-aaa\n1, GPU-bbb\n",
+                                        stderr="")
+            return CompletedProcess([], 0, stdout="GPU-bbb, 284\n", stderr="")
+
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   side_effect=fake_run), \
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0",
+                                        "BIRD_HKE_SKIP_IDLE_GPU_CHECK": ""}):
+            require_idle_gpu()
+        self.assertTrue(any(any("index,uuid" in part for part in cmd)
+                            for cmd in calls))
+
+    def test_gpu_busy_guard_can_be_overridden(self):
+        from subprocess import CompletedProcess
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   return_value=CompletedProcess([], 0,
+                                                 stdout="GPU-abc, 284\n",
+                                                 stderr="")), \
+                patch.dict(os.environ,
+                           {"BIRD_HKE_SKIP_IDLE_GPU_CHECK": "1"}):
+            require_idle_gpu()
+
+    def test_gpu_busy_guard_fails_closed_without_nvidia_smi(self):
+        import subprocess as sp
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   side_effect=FileNotFoundError("nvidia-smi")), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_IDLE_GPU_CHECK": ""}):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "Cannot verify GPU is idle"):
                 require_idle_gpu()
 
     def test_best_checkpoint_recovery_keeps_previous_slot(self):
