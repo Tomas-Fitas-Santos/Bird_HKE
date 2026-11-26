@@ -95,41 +95,53 @@ def _visible_free_memory():
     return rows
 
 
-def _nvml_indices():
-    """Map each visible torch device to its nvidia-smi/NVML index.
+def _normalize_gpu_uuid(value) -> str:
+    """Canonical form for a GPU UUID so CUDA and nvidia-smi strings compare.
 
-    torch and nvidia-smi can enumerate GPUs in *different orders* (on the
-    cluster2 H100 host torch lists the NVL first while nvidia-smi lists the
-    PCIe first), so a ``CUDA_VISIBLE_DEVICES`` index must never be applied to
-    nvidia-smi output directly.
+    ``nvidia-smi`` prints ``GPU-<hex>`` while the CUDA device property may or
+    may not carry that prefix and may use dashes, so both sides are reduced to
+    bare uppercase hex.
     """
-    try:
-        from torch.cuda import _get_nvml_device_index
-    except ImportError:
-        return None
-    try:
-        return [
-            _get_nvml_device_index(torch.device(f"cuda:{local_index}"))
-            for local_index in range(torch.cuda.device_count())
-        ]
-    except Exception:
-        return None
+    text = str(value).strip().upper().replace("-", "")
+    return text[4:] if text.startswith("GPU") else text
+
+
+def _visible_device_uuids():
+    """Return the UUIDs of this process's visible GPUs, or None.
+
+    The UUID is read from the CUDA context itself, which is the only identity
+    that survives the two ways of numbering GPUs. ``torch.cuda.
+    _get_nvml_device_index`` is *not* usable here despite its name: it returns
+    ``_parse_visible_devices()[idx]``, i.e. the CUDA ordinal that
+    ``CUDA_VISIBLE_DEVICES`` was set to, not an NVML index. Applying that
+    number to ``nvidia-smi`` output is exactly the mistake that made an idle
+    H100 PCIe report the ten co-tenants of a different card.
+    """
+    uuids = []
+    for local_index in range(torch.cuda.device_count()):
+        try:
+            value = getattr(torch.cuda.get_device_properties(local_index),
+                            "uuid", None)
+        except Exception:
+            return None
+        if value is None:
+            return None
+        uuids.append(_normalize_gpu_uuid(value))
+    return uuids or None
 
 
 def _shared_process_count():
     """Best-effort count of other compute processes on this run's GPU(s).
 
-    Informational only, and attributed by UUID so a colleague on another card
-    is not counted. Returns None when it cannot be determined.
+    Informational only, and attributed by the UUID of the card the CUDA
+    context is actually on, so a colleague on another card is never counted.
+    Returns None when it cannot be determined -- including on hosts without
+    nvidia-smi, which is normal on some cluster nodes.
     """
-    nvml = _nvml_indices()
-    if nvml is None:
+    wanted = _visible_device_uuids()
+    if wanted is None:
         return None
     try:
-        listing = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, check=True, text=True, timeout=15)
         apps = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
              "--format=csv,noheader,nounits"],
@@ -137,18 +149,16 @@ def _shared_process_count():
     except (FileNotFoundError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired):
         return None
-    wanted = {str(index) for index in nvml}
-    chosen = {parts[1].strip()
-              for line in listing.stdout.splitlines()
-              for parts in [line.split(",")]
-              if len(parts) == 2 and parts[0].strip() in wanted}
-    if not chosen:
-        return None
-    return len({pid for line in apps.stdout.splitlines()
-                for parts in [line.split(",")]
-                for pid in [parts[-1].strip()]
-                if len(parts) == 2 and pid.isdigit()
-                and parts[0].strip() in chosen and int(pid) != os.getpid()})
+    return len({
+        int(pid)
+        for line in apps.stdout.splitlines()
+        for parts in [[p.strip() for p in line.split(",")]]
+        if len(parts) == 2
+        for gpu_uuid, pid in [parts]
+        if pid.isdigit()
+        and _normalize_gpu_uuid(gpu_uuid) in wanted
+        and int(pid) != os.getpid()
+    })
 
 
 def require_gpu_capacity(min_free_mib: float | None = None):

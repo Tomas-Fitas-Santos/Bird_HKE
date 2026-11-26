@@ -3,8 +3,10 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from io import StringIO
 
 try:
     import cv2
@@ -214,24 +216,51 @@ class ViTPoseProtocolTests(unittest.TestCase):
         """
         from subprocess import CompletedProcess
 
-        def fake_run(cmd, **_kwargs):
-            if any("index,uuid" in part for part in cmd):
-                return CompletedProcess([], 0, stdout="1, GPU-bbb\n", stderr="")
-            return CompletedProcess([], 0, stdout="GPU-bbb, 284\n", stderr="")
-
         with patch("comparison_models.common.training_utils.torch.cuda.device_count",
                    return_value=1), \
                 patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
                       return_value=(40000 * self.MiB, 79253 * self.MiB)), \
                 patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
                       return_value="Test GPU"), \
-                patch("comparison_models.common.training_utils._nvml_indices",
-                      return_value=[1]), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-aaa")), \
                 patch("comparison_models.common.training_utils.subprocess.run",
-                      side_effect=fake_run), \
+                      return_value=CompletedProcess([], 0,
+                                                    stdout="GPU-aaa, 284\n",
+                                                    stderr="")), \
                 patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
                                         "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
             require_gpu_capacity()
+
+    def test_shared_process_count_is_attributed_by_uuid_not_index(self):
+        """Co-tenants must be counted for the card the CUDA context is on.
+
+        torch and nvidia-smi can enumerate GPUs in different orders, and
+        torch.cuda._get_nvml_device_index returns a CUDA ordinal rather than an
+        NVML index, so counting by index once credited an idle H100 PCIe with
+        the ten processes living on a different card.
+        """
+        from subprocess import CompletedProcess
+
+        apps = ("GPU-busy, 111\nGPU-busy, 222\nGPU-mine, 333\n")
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(80000 * self.MiB, 81079 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="NVIDIA H100 PCIe"), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-mine")), \
+                patch("comparison_models.common.training_utils.subprocess.run",
+                      return_value=CompletedProcess([], 0, stdout=apps,
+                                                    stderr="")) as run, \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            with patch("sys.stdout", new_callable=StringIO) as out:
+                require_gpu_capacity()
+        self.assertIn("sharing with 1 other compute process", out.getvalue())
+        self.assertNotIn("GPU-busy", "".join(
+            str(call.args[0]) for call in run.call_args_list))
 
     def test_gpu_capacity_guard_uses_free_memory_of_visible_device_only(self):
         """A colleague saturating another card must not block this run.
@@ -250,7 +279,7 @@ class ViTPoseProtocolTests(unittest.TestCase):
                       return_value=(78000 * self.MiB, 79253 * self.MiB)) as mem, \
                 patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
                       return_value="Test GPU"), \
-                patch("comparison_models.common.training_utils._nvml_indices",
+                patch("comparison_models.common.training_utils._visible_device_uuids",
                       return_value=None), \
                 patch("comparison_models.common.training_utils.subprocess.run",
                       side_effect=no_nvidia_smi_for_memory), \
@@ -286,6 +315,8 @@ class ViTPoseProtocolTests(unittest.TestCase):
                       return_value=(40 * 1024 * self.MiB, 48 * 1024 * self.MiB)), \
                 patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
                       return_value="NVIDIA RTX A6000"), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-bbbb")), \
                 patch("comparison_models.common.training_utils.subprocess.run",
                       side_effect=FileNotFoundError("nvidia-smi")), \
                 patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
