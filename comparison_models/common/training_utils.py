@@ -61,8 +61,7 @@ def ensure_isolated_runtime(marker: str, documentation: str):
             "Require exactly one visible CUDA GPU (set CUDA_VISIBLE_DEVICES)")
 
 
-#: Opt-out for hosts whose nvidia-smi is missing or unreliable (some login
-#: nodes ship the driver without the monitoring utility).
+#: Opt-out for hosts with no usable memory probe at all.
 CAPACITY_GUARD_SKIP = "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK"
 
 #: Override for the free-memory floor, in MiB.
@@ -75,69 +74,81 @@ CAPACITY_GUARD_FLOOR = "BIRD_HKE_GPU_MIN_FREE_MIB"
 DEFAULT_MIN_FREE_MIB = 4096
 
 
-def _visible_device_indices():
-    """Host GPU indices this process may use, or None when unrestricted."""
-    requested = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if not requested:
-        return None
-    wanted = set()
-    for item in requested.split(","):
-        item = item.strip()
-        if item.isdigit():
-            wanted.add(item)
-    return wanted or None
+def _visible_free_memory():
+    """Return [(label, free_mib, total_mib)] for this process's visible GPUs.
 
-
-def _query_gpu_state():
-    """Return (rows, shared_pids) for the visible GPUs.
-
-    ``rows`` is a list of ``(index, free_mib, total_mib)`` limited to the
-    devices selected by ``CUDA_VISIBLE_DEVICES``; ``shared_pids`` counts other
-    compute processes already resident on those same devices. Sharing a card is
-    allowed, so the count is informational rather than a reason to refuse.
+    torch is the only trustworthy source here: it already applies
+    ``CUDA_VISIBLE_DEVICES`` *and* the host's device ordering. ``nvidia-smi``
+    numbers GPUs independently, and on hosts where the two orders differ
+    (e.g. PCI vs fast-first enumeration) filtering its output by the
+    ``CUDA_VISIBLE_DEVICES`` index silently reads the wrong card.
     """
-    response = subprocess.run(
-        ["nvidia-smi", "--query-gpu=index,memory.free,memory.total",
-         "--format=csv,noheader,nounits"],
-        capture_output=True, check=True, text=True, timeout=15)
-    wanted = _visible_device_indices()
     rows = []
-    for line in response.stdout.splitlines():
-        parts = [value.strip() for value in line.split(",")]
-        if len(parts) != 3 or not parts[0].isdigit():
-            continue
-        if wanted is None or parts[0] in wanted:
-            rows.append((parts[0], float(parts[1]), float(parts[2])))
-    if not rows:
-        raise RuntimeError(
-            f"nvidia-smi reports no GPU matching CUDA_VISIBLE_DEVICES="
-            f"{os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')!r}")
+    for local_index in range(torch.cuda.device_count()):
+        free_bytes, total_bytes = torch.cuda.mem_get_info(local_index)
+        try:
+            name = torch.cuda.get_device_name(local_index)
+        except Exception:
+            name = "cuda"
+        rows.append((f"cuda:{local_index} ({name})",
+                     free_bytes / 2 ** 20, total_bytes / 2 ** 20))
+    return rows
 
-    # Map the selected host indices to UUIDs so co-resident processes can be
-    # attributed to this run's card(s) only.
-    shared = 0
+
+def _nvml_indices():
+    """Map each visible torch device to its nvidia-smi/NVML index.
+
+    torch and nvidia-smi can enumerate GPUs in *different orders* (on the
+    cluster2 H100 host torch lists the NVL first while nvidia-smi lists the
+    PCIe first), so a ``CUDA_VISIBLE_DEVICES`` index must never be applied to
+    nvidia-smi output directly.
+    """
     try:
-        uuids = subprocess.run(
+        from torch.cuda import _get_nvml_device_index
+    except ImportError:
+        return None
+    try:
+        return [
+            _get_nvml_device_index(torch.device(f"cuda:{local_index}"))
+            for local_index in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return None
+
+
+def _shared_process_count():
+    """Best-effort count of other compute processes on this run's GPU(s).
+
+    Informational only, and attributed by UUID so a colleague on another card
+    is not counted. Returns None when it cannot be determined.
+    """
+    nvml = _nvml_indices()
+    if nvml is None:
+        return None
+    try:
+        listing = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,uuid",
              "--format=csv,noheader,nounits"],
             capture_output=True, check=True, text=True, timeout=15)
-        selected = {line.split(",")[0].strip(): line.split(",")[1].strip()
-                    for line in uuids.stdout.splitlines()
-                    if len(line.split(",")) == 2}
-        chosen = {selected[index] for index, _, _ in rows if index in selected}
         apps = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
              "--format=csv,noheader,nounits"],
             capture_output=True, check=True, text=True, timeout=15)
-        shared = len({pid for line in apps.stdout.splitlines()
-                      for pid in [line.split(",")[-1].strip()]
-                      if len(line.split(",")) == 2 and pid.isdigit()
-                      and line.split(",")[0].strip() in chosen
-                      and int(pid) != os.getpid()})
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            IndexError):
-        shared = 0
-    return rows, shared
+    except (FileNotFoundError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired):
+        return None
+    wanted = {str(index) for index in nvml}
+    chosen = {parts[1].strip()
+              for line in listing.stdout.splitlines()
+              for parts in [line.split(",")]
+              if len(parts) == 2 and parts[0].strip() in wanted}
+    if not chosen:
+        return None
+    return len({pid for line in apps.stdout.splitlines()
+                for parts in [line.split(",")]
+                for pid in [parts[-1].strip()]
+                if len(parts) == 2 and pid.isdigit()
+                and parts[0].strip() in chosen and int(pid) != os.getpid()})
 
 
 def require_gpu_capacity(min_free_mib: float | None = None):
@@ -149,8 +160,8 @@ def require_gpu_capacity(min_free_mib: float | None = None):
     fixed batch order. The one thing co-tenancy can break is the run itself, by
     exhausting memory, so that is what is checked here.
 
-    Only the device(s) selected by ``CUDA_VISIBLE_DEVICES`` are considered, so
-    a colleague on another card of the same host never blocks this run. Other
+    Only the device(s) this process can actually see are considered, so a
+    colleague on another card of the same host never blocks this run. Other
     processes sharing the selected card are reported but permitted.
 
     This is a startup check, not a scheduler: a job starting later can still
@@ -163,40 +174,27 @@ def require_gpu_capacity(min_free_mib: float | None = None):
     required = float(os.environ.get(CAPACITY_GUARD_FLOOR)
                      or (min_free_mib or DEFAULT_MIN_FREE_MIB))
     try:
-        rows, shared = _query_gpu_state()
-    except (FileNotFoundError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired):
-        # Some GPU hosts ship the driver without the nvidia-smi utility. torch
-        # can still report free memory, and it already honours
-        # CUDA_VISIBLE_DEVICES, so use it instead of refusing to start.
-        try:
-            free_bytes, total_bytes = torch.cuda.mem_get_info(0)
-        except Exception as exc:
-            raise RuntimeError(
-                "Cannot read GPU memory state (no nvidia-smi and no usable "
-                "CUDA context); refusing to start. Set "
-                f"{CAPACITY_GUARD_SKIP}=1 to override.") from exc
-        free, total = free_bytes / 2 ** 20, total_bytes / 2 ** 20
-        if free < required:
-            raise RuntimeError(
-                f"The assigned GPU has only {free:.0f} MiB free of "
-                f"{total:.0f} MiB; this run needs at least "
-                f"{required:.0f} MiB.")
-        print(f"GPU (via torch): {free:.0f}/{total:.0f} MiB free "
-              f"(>= {required:.0f} MiB required); nvidia-smi unavailable",
-              flush=True)
-        return
-    index, free, total = min(rows, key=lambda row: row[1])
+        rows = _visible_free_memory()
+    except Exception as exc:
+        raise RuntimeError(
+            "Cannot read GPU memory state from the CUDA context; refusing to "
+            f"start. Set {CAPACITY_GUARD_SKIP}=1 to override.") from exc
+    if not rows:
+        raise RuntimeError("No CUDA device is visible to this process.")
+    label, free, total = min(rows, key=lambda row: row[1])
     if free < required:
         raise RuntimeError(
-            f"GPU {index} has only {free:.0f} MiB free of {total:.0f} MiB; "
-            f"this run needs at least {required:.0f} MiB. Free the card, "
-            f"raise {CAPACITY_GUARD_FLOOR}, or set "
-            f"{CAPACITY_GUARD_SKIP}=1 if you have verified the memory.")
-    print(f"GPU {index}: {free:.0f}/{total:.0f} MiB free "
+            f"{label} has only {free:.0f} MiB free of {total:.0f} MiB; this "
+            f"run needs at least {required:.0f} MiB. Choose a freer GPU, raise "
+            f"{CAPACITY_GUARD_FLOOR}, or set {CAPACITY_GUARD_SKIP}=1 if you "
+            "have verified the memory.")
+    shared = _shared_process_count()
+    note = ("exclusive" if shared == 0 else
+            f"sharing with {shared} other compute process(es)"
+            if shared else "")
+    print(f"{label}: {free:.0f}/{total:.0f} MiB free "
           f"(>= {required:.0f} MiB required)"
-          + (f", sharing with {shared} other compute process(es)" if shared
-             else ", exclusive"), flush=True)
+          + (f", {note}" if note else ""), flush=True)
 
 
 

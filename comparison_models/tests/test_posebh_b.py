@@ -213,11 +213,12 @@ class PoseBHProtocolTests(unittest.TestCase):
             scheduler.step()
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
                                RECIPE["lr"] * 0.01)
-        from subprocess import CompletedProcess
-        with patch("comparison_models.common.training_utils.subprocess.run",
-                   return_value=CompletedProcess([], 0,
-                                                 stdout="0, 512, 12288\n",
-                                                 stderr="")), \
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(512 * 2 ** 20, 12288 * 2 ** 20)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="Test GPU"), \
                 patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
                                         "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
             with self.assertRaisesRegex(RuntimeError, "has only 512 MiB free"):

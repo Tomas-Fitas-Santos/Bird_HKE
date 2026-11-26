@@ -22,6 +22,7 @@ import json
 import math
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -217,11 +218,17 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
         del state
 
         # Epoch 2: actually take more optimizer steps after the checkpoint.
+        # Timed, because this is the steady-state epoch a definitive run
+        # repeats, so it is the number the training plan is sized from.
         train_loader = trainer.make_epoch_loader(train_set, epoch=1, train=True)
+        epoch_started = time.perf_counter()
         stats2 = trainer.training_epoch(
             model, optimizer, scaler, train_loader, len(train_set), 1,
             scheduler=scheduler)
+        train_seconds = time.perf_counter() - epoch_started
+        val_started = time.perf_counter()
         val2 = trainer.validation_epoch(model, val_set, 1)
+        val_seconds = time.perf_counter() - val_started
         best, slot, digest = checkpoint_epoch(
             trainer, model, optimizer, scheduler, scaler, temp_path,
             manifest, 1, best, slot, digest, stats2, val2)
@@ -253,6 +260,13 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
             "epochs": 2,
             "best_val_pck_005": best,
             "peak_allocated_cuda_mib": max(peak),
+            "device": torch.cuda.get_device_name(0),
+            "throughput": {
+                "train_images_per_s": round(len(train_set) / train_seconds, 2),
+                "train_seconds_per_epoch": round(train_seconds, 2),
+                "val_images_per_s": round(len(val_set) / val_seconds, 2),
+                "val_seconds_per_epoch": round(val_seconds, 2),
+            },
             "checkpoint": "written, reloaded, and hash-verified",
             "resume": "full state and second epoch PASS",
             "definitive_run_folder_written": False,
