@@ -32,8 +32,11 @@ def main() -> int:
             problems.append(f"{label} unavailable: {exc}")
     if shutil.which("git") is None:
         problems.append("Git not found in PATH")
-    if shutil.which("nvidia-smi") is None:
-        problems.append("nvidia-smi not found in PATH")
+    # nvidia-smi is informational only: free memory is read from
+    # torch.cuda.mem_get_info, so a driver shipped without the monitoring tool
+    # (some cluster nodes) is not a reason to refuse training.
+    smi = shutil.which("nvidia-smi")
+    print("nvidia-smi:", smi or "not found (optional; capacity uses torch)")
     try:
         import torch
         print("Torch CUDA build:", torch.version.cuda)

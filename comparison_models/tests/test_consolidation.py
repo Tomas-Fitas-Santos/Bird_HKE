@@ -16,6 +16,8 @@ import sys
 import unittest
 
 from comparison_models.registry import COMPARISON_MODELS, ROOT, SCENARIOS
+from comparison_models.cli import interpreter_for
+from unittest.mock import patch
 
 REPO = ROOT
 
@@ -225,6 +227,36 @@ class NativePreservationTests(unittest.TestCase):
 
 
 class CliSafetyTests(unittest.TestCase):
+    def test_interpreter_for_keeps_the_venv_path_across_its_symlink(self):
+        """venv/bin/python is a symlink to the base interpreter.
+
+        Resolving it would hand the CLI the base Python, which does not
+        activate the venv, so the model's own ensure_isolated_runtime check
+        would reject it -- and a definitive run would silently launch in the
+        wrong environment.
+        """
+        import os
+        import tempfile
+
+        work = Path(tempfile.mkdtemp(prefix="cli-venv-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(work))
+        base = work / "conda-envs" / "mamba" / "bin"
+        base.mkdir(parents=True)
+        real = base / "python"
+        real.write_text("")
+        venv = work / "venvs" / "vitpose-b-cu128-venv" / "bin"
+        venv.mkdir(parents=True)
+        link = venv / "python"
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+        model = COMPARISON_MODELS.resolve("vitpose-b")[0]
+        with patch.dict(os.environ, {"VITPOSE_ENV_PREFIX": str(link.parent.parent)}):
+            found = interpreter_for(model)
+        self.assertEqual(found, link)
+        self.assertIn("vitpose", str(found).lower())
+
     def test_train_requires_an_explicit_single_model(self):
         result = subprocess.run(
             [sys.executable, "-m", "comparison_models.cli", "train",

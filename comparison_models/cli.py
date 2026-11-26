@@ -50,9 +50,15 @@ def interpreter_for(model: ComparisonModel) -> Path | None:
     recorded in the registry hint. The current interpreter is only accepted
     when it already carries the model's environment marker, which is exactly
     the rule the model's own trainer enforces.
+
+    The path is deliberately *not* resolved: ``venv/bin/python`` is normally a
+    symlink to the base interpreter, and following it would hand back the base
+    Python, which does not activate the venv and therefore fails
+    ``ensure_isolated_runtime``.
     """
-    current = Path(sys.executable).resolve()
-    if model.environment_marker in str(current).lower():
+    current = Path(sys.executable)
+    if model.environment_marker in str(current).lower() or \
+            model.environment_marker in str(current.resolve()).lower():
         return current
     override = os.environ.get(ENVIRONMENT_VARIABLES.get(model.model_id, ""), "")
     candidate = override or model.environment_hint
@@ -61,7 +67,7 @@ def interpreter_for(model: ComparisonModel) -> Path | None:
     path = Path(candidate)
     for probe in ((path / "bin" / "python"), (path / "Scripts" / "python.exe"), path):
         if probe.is_file():
-            return probe.resolve()
+            return probe
     return None
 
 

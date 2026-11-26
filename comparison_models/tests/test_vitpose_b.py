@@ -1,9 +1,12 @@
 """Unit/synthetic regression tests for the independent standard ViTPose-B stack."""
 import json
+import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from io import StringIO
 
 try:
     import cv2
@@ -19,7 +22,7 @@ try:
     from comparison_models.vitpose.train import ViTPoseBTrainer
     from comparison_models.common.losses import masked_heatmap_mse
     from comparison_models.common.training_utils import (
-        require_idle_gpu, refresh_best_alias, recover_history,
+        require_gpu_capacity, refresh_best_alias, recover_history,
     )
     from comparison_models.common.preflight import sha256
     HAS_DEPS = True
@@ -190,12 +193,143 @@ class ViTPoseProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
                                RECIPE["lr"] * 0.01)
 
-    def test_gpu_busy_guard(self):
+    MiB = 2 ** 20
+
+    def test_gpu_capacity_guard_refuses_low_free_memory(self):
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(1024 * self.MiB, 12288 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="Test GPU"), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            with self.assertRaisesRegex(RuntimeError, "has only 1024 MiB free"):
+                require_gpu_capacity()
+
+    def test_gpu_capacity_guard_allows_sharing_the_same_gpu(self):
+        """A co-resident process must NOT block the run if memory is free.
+
+        Both comparison models peak near 2 GiB, so several runs can share one
+        card; determinism comes from the per-process RNG and fixed batch order,
+        not from exclusive access to the silicon.
+        """
         from subprocess import CompletedProcess
-        with patch("comparison_models.common.training_utils.subprocess.run",
-                   return_value=CompletedProcess([], 0, stdout="284\n", stderr="")):
-            with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
-                require_idle_gpu()
+
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(40000 * self.MiB, 79253 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="Test GPU"), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-aaa")), \
+                patch("comparison_models.common.training_utils.subprocess.run",
+                      return_value=CompletedProcess([], 0,
+                                                    stdout="GPU-aaa, 284\n",
+                                                    stderr="")), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
+
+    def test_shared_process_count_is_attributed_by_uuid_not_index(self):
+        """Co-tenants must be counted for the card the CUDA context is on.
+
+        torch and nvidia-smi can enumerate GPUs in different orders, and
+        torch.cuda._get_nvml_device_index returns a CUDA ordinal rather than an
+        NVML index, so counting by index once credited an idle H100 PCIe with
+        the ten processes living on a different card.
+        """
+        from subprocess import CompletedProcess
+
+        apps = ("GPU-busy, 111\nGPU-busy, 222\nGPU-mine, 333\n")
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(80000 * self.MiB, 81079 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="NVIDIA H100 PCIe"), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-mine")), \
+                patch("comparison_models.common.training_utils.subprocess.run",
+                      return_value=CompletedProcess([], 0, stdout=apps,
+                                                    stderr="")) as run, \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            with patch("sys.stdout", new_callable=StringIO) as out:
+                require_gpu_capacity()
+        self.assertIn("sharing with 1 other compute process", out.getvalue())
+        self.assertNotIn("GPU-busy", "".join(
+            str(call.args[0]) for call in run.call_args_list))
+
+    def test_gpu_capacity_guard_uses_free_memory_of_visible_device_only(self):
+        """A colleague saturating another card must not block this run.
+
+        torch already restricts device_count/mem_get_info to the visible
+        device, so the guard must not consult nvidia-smi for memory at all --
+        its index ordering can differ from CUDA's and silently report the
+        wrong card.
+        """
+        def no_nvidia_smi_for_memory(*_args, **_kwargs):
+            raise AssertionError("nvidia-smi must not be consulted for memory")
+
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(78000 * self.MiB, 79253 * self.MiB)) as mem, \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="Test GPU"), \
+                patch("comparison_models.common.training_utils._visible_device_uuids",
+                      return_value=None), \
+                patch("comparison_models.common.training_utils.subprocess.run",
+                      side_effect=no_nvidia_smi_for_memory), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
+        mem.assert_called_once_with(0)
+
+    def test_gpu_capacity_guard_floor_is_configurable(self):
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(5000 * self.MiB, 12288 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="Test GPU"), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": "6000"}):
+            with self.assertRaisesRegex(RuntimeError, "6000 MiB"):
+                require_gpu_capacity()
+
+    def test_gpu_capacity_guard_can_be_overridden(self):
+        with patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                   side_effect=AssertionError("must not probe when overridden")), \
+                patch.dict(os.environ,
+                           {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "1"}):
+            require_gpu_capacity()
+
+    def test_gpu_capacity_guard_needs_no_nvidia_smi(self):
+        """cluster1 ships the driver without nvidia-smi; it must still run."""
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=1), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(40 * 1024 * self.MiB, 48 * 1024 * self.MiB)), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_name",
+                      return_value="NVIDIA RTX A6000"), \
+                patch("comparison_models.common.training_utils.torch.cuda.get_device_properties",
+                      return_value=SimpleNamespace(uuid="GPU-bbbb")), \
+                patch("comparison_models.common.training_utils.subprocess.run",
+                      side_effect=FileNotFoundError("nvidia-smi")), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
+
+    def test_gpu_capacity_guard_fails_closed_without_cuda(self):
+        with patch("comparison_models.common.training_utils.torch.cuda.device_count",
+                   return_value=0), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": ""}):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "No CUDA device is visible"):
+                require_gpu_capacity()
 
     def test_best_checkpoint_recovery_keeps_previous_slot(self):
         work = Path(tempfile.mkdtemp(prefix="vitpose-best-slots-"))

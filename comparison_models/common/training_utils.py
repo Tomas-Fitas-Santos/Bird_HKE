@@ -61,27 +61,151 @@ def ensure_isolated_runtime(marker: str, documentation: str):
             "Require exactly one visible CUDA GPU (set CUDA_VISIBLE_DEVICES)")
 
 
-def require_idle_gpu():
-    """Fail closed before allocating model CUDA memory if any compute PID exists.
+#: Opt-out for hosts with no usable memory probe at all.
+CAPACITY_GUARD_SKIP = "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK"
 
-    This is a startup check, not a scheduler. It cannot stop another job from
-    starting subsequently. Coordinate Titan scheduling across researchers.
+#: Override for the free-memory floor, in MiB.
+CAPACITY_GUARD_FLOOR = "BIRD_HKE_GPU_MIN_FREE_MIB"
+
+#: Free memory a single comparison run needs before it starts. ViTPose-B and
+#: PoseBH-B peak at ~2.2 GiB allocated at their fixed microbatch, and the
+#: CUDA context, cuDNN workspaces and the fp16 gradient scaler add roughly
+#: another GiB. Two runs therefore share a 12 GiB card comfortably.
+DEFAULT_MIN_FREE_MIB = 4096
+
+
+def _visible_free_memory():
+    """Return [(label, free_mib, total_mib)] for this process's visible GPUs.
+
+    torch is the only trustworthy source here: it already applies
+    ``CUDA_VISIBLE_DEVICES`` *and* the host's device ordering. ``nvidia-smi``
+    numbers GPUs independently, and on hosts where the two orders differ
+    (e.g. PCI vs fast-first enumeration) filtering its output by the
+    ``CUDA_VISIBLE_DEVICES`` index silently reads the wrong card.
     """
+    rows = []
+    for local_index in range(torch.cuda.device_count()):
+        free_bytes, total_bytes = torch.cuda.mem_get_info(local_index)
+        try:
+            name = torch.cuda.get_device_name(local_index)
+        except Exception:
+            name = "cuda"
+        rows.append((f"cuda:{local_index} ({name})",
+                     free_bytes / 2 ** 20, total_bytes / 2 ** 20))
+    return rows
+
+
+def _normalize_gpu_uuid(value) -> str:
+    """Canonical form for a GPU UUID so CUDA and nvidia-smi strings compare.
+
+    ``nvidia-smi`` prints ``GPU-<hex>`` while the CUDA device property may or
+    may not carry that prefix and may use dashes, so both sides are reduced to
+    bare uppercase hex.
+    """
+    text = str(value).strip().upper().replace("-", "")
+    return text[4:] if text.startswith("GPU") else text
+
+
+def _visible_device_uuids():
+    """Return the UUIDs of this process's visible GPUs, or None.
+
+    The UUID is read from the CUDA context itself, which is the only identity
+    that survives the two ways of numbering GPUs. ``torch.cuda.
+    _get_nvml_device_index`` is *not* usable here despite its name: it returns
+    ``_parse_visible_devices()[idx]``, i.e. the CUDA ordinal that
+    ``CUDA_VISIBLE_DEVICES`` was set to, not an NVML index. Applying that
+    number to ``nvidia-smi`` output is exactly the mistake that made an idle
+    H100 PCIe report the ten co-tenants of a different card.
+    """
+    uuids = []
+    for local_index in range(torch.cuda.device_count()):
+        try:
+            value = getattr(torch.cuda.get_device_properties(local_index),
+                            "uuid", None)
+        except Exception:
+            return None
+        if value is None:
+            return None
+        uuids.append(_normalize_gpu_uuid(value))
+    return uuids or None
+
+
+def _shared_process_count():
+    """Best-effort count of other compute processes on this run's GPU(s).
+
+    Informational only, and attributed by the UUID of the card the CUDA
+    context is actually on, so a colleague on another card is never counted.
+    Returns None when it cannot be determined -- including on hosts without
+    nvidia-smi, which is normal on some cluster nodes.
+    """
+    wanted = _visible_device_uuids()
+    if wanted is None:
+        return None
     try:
-        response = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid",
+        apps = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
              "--format=csv,noheader,nounits"],
             capture_output=True, check=True, text=True, timeout=15)
     except (FileNotFoundError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired) as exc:
+            subprocess.TimeoutExpired):
+        return None
+    return len({
+        int(pid)
+        for line in apps.stdout.splitlines()
+        for parts in [[p.strip() for p in line.split(",")]]
+        if len(parts) == 2
+        for gpu_uuid, pid in [parts]
+        if pid.isdigit()
+        and _normalize_gpu_uuid(gpu_uuid) in wanted
+        and int(pid) != os.getpid()
+    })
+
+
+def require_gpu_capacity(min_free_mib: float | None = None):
+    """Refuse to start unless the assigned GPU has enough free memory.
+
+    The protocol needs an *isolated environment* and a *fixed* seed, neither of
+    which is affected by another process sharing the card: each run gets its
+    own CUDA context, and determinism comes from the per-process RNG plus the
+    fixed batch order. The one thing co-tenancy can break is the run itself, by
+    exhausting memory, so that is what is checked here.
+
+    Only the device(s) this process can actually see are considered, so a
+    colleague on another card of the same host never blocks this run. Other
+    processes sharing the selected card are reported but permitted.
+
+    This is a startup check, not a scheduler: a job starting later can still
+    consume the memory, so plan the co-tenancy deliberately.
+    """
+    if os.environ.get(CAPACITY_GUARD_SKIP) == "1":
+        print(f"GPU capacity check skipped via {CAPACITY_GUARD_SKIP}=1.",
+              flush=True)
+        return
+    required = float(os.environ.get(CAPACITY_GUARD_FLOOR)
+                     or (min_free_mib or DEFAULT_MIN_FREE_MIB))
+    try:
+        rows = _visible_free_memory()
+    except Exception as exc:
         raise RuntimeError(
-            "Cannot verify GPU is idle with nvidia-smi; refusing") from exc
-    busy = [value.strip() for value in response.stdout.splitlines()
-            if value.strip().isdigit()]
-    if busy:
+            "Cannot read GPU memory state from the CUDA context; refusing to "
+            f"start. Set {CAPACITY_GUARD_SKIP}=1 to override.") from exc
+    if not rows:
+        raise RuntimeError("No CUDA device is visible to this process.")
+    label, free, total = min(rows, key=lambda row: row[1])
+    if free < required:
         raise RuntimeError(
-            "Another GPU compute process is running (PIDs: "
-            + ", ".join(busy) + "); refusing to interfere with it")
+            f"{label} has only {free:.0f} MiB free of {total:.0f} MiB; this "
+            f"run needs at least {required:.0f} MiB. Choose a freer GPU, raise "
+            f"{CAPACITY_GUARD_FLOOR}, or set {CAPACITY_GUARD_SKIP}=1 if you "
+            "have verified the memory.")
+    shared = _shared_process_count()
+    note = ("exclusive" if shared == 0 else
+            f"sharing with {shared} other compute process(es)"
+            if shared else "")
+    print(f"{label}: {free:.0f}/{total:.0f} MiB free "
+          f"(>= {required:.0f} MiB required)"
+          + (f", {note}" if note else ""), flush=True)
+
 
 
 def set_determinism(seed: int):
@@ -459,8 +583,8 @@ class SingleTaskTrainer:
     restore_rng = staticmethod(restore_rng)
     sha256 = staticmethod(sha256)
 
-    def require_idle_gpu(self):
-        require_idle_gpu()
+    def require_gpu_capacity(self):
+        require_gpu_capacity()
 
     # -- epochs ------------------------------------------------------------
     def training_epoch(self, model, optimizer, scaler, loader, dataset_size,
