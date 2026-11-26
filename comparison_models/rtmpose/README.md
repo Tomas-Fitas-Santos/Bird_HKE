@@ -55,6 +55,25 @@ The reference source is the pinned MMPose checkout at
 All code and configuration changes are kept in this repo, not in the upstream
 checkout. This implementation requires a separate MMPose 1.x environment.
 
+### Verifying the recipe without a full mmcv build
+
+Full MMEngine training needs mmcv 2.x compiled with CUDA ops. Where that build
+is unavailable, the recipe itself can still be checked with only `mmengine` and
+`mmcv-lite`:
+
+```bash
+bash comparison_models/scripts/setup_external_pose_sources.sh
+BIRDGAZE_SCENARIO=FD python comparison_models/rtmpose/verify_paper_recipe.py
+```
+
+It resolves the config through `_base_` from the pinned upstream file, compares
+every training-method value against it, builds the real optimizer so
+`paramwise_cfg` is exercised, drives a real `Runner` over all 100 epochs to
+confirm the warmup and cosine trajectory, and builds the paper's
+`ExpMomentumEMA`. It does **not** replace the GPU preflight in section 3, which
+is the only check that executes the real CSPNeXt/RTMCC kernels on BirdGaze
+data.
+
 ## 1. Checkout and data conversion (run on Titan)
 
 Run commands in an ordinary interactive terminal; **do not run `set -e`

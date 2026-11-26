@@ -68,15 +68,63 @@ uncertainty must resample video sequences, not frames.
 | Shared BirdGaze conversion + OS/CS source-crop fidelity | implemented, CPU-tested |
 | OS/CS identical-export guard | implemented (`preflight.validate_os_cs_distinction`) |
 | Per-model paper-faithful optimizer/schedule | implemented, CPU-tested ([details](./PAPER_FAITHFUL_PROTOCOL.md)) |
-| ViTPose-B trainer | implemented; CPU-tested; **GPU smoke UNVERIFIED** |
-| PoseBH-B trainer | implemented; CPU-tested; **GPU smoke UNVERIFIED** |
-| ViTPose/PoseBH 2-epoch train+resume probe | implemented; **UNVERIFIED** (needs GPU) |
-| RTMPose-M FD GPU data/model preflight | implemented; **UNVERIFIED** |
-| RTMPose-M disposable optimizer/resume probe | **not implemented** - upstream MMEngine runner has no isolated mini-run harness |
+| ViTPose-B trainer | implemented; CPU-tested; **GPU smoke PASSED** (FD, real data) |
+| PoseBH-B trainer | implemented; CPU-tested; **GPU smoke PASSED** (FD, real data) |
+| ViTPose/PoseBH 2-epoch train+validate+resume probe | **PASSED** on GPU for both models |
+| RTMPose-M paper recipe (values, optimizer build, LR trajectory, EMA) | **PASSED** via `comparison_models/rtmpose/verify_paper_recipe.py` |
+| RTMPose-M FD GPU data/model preflight | implemented; **UNVERIFIED** - needs full mmcv |
+| RTMPose-M end-to-end GPU training | **BLOCKED** - no mmcv 2.x build for this torch/CUDA |
 | Any of the nine definitive runs | **not started** |
 
 CPU CI being green is a merge requirement. GPU validation is a separate
-full-training readiness gate. No GPU result has been produced for any of the
-three models, and none should be reported until
-`bash comparison_models/scripts/test_comparison_models.sh FD` passes on the
-cluster.
+full-training readiness gate. The GPU results below were produced on a single
+RTX 5060 (8 GB) under WSL2 with the isolated per-model environments; they
+validate the code path, not the final accuracy. None should be reported as a
+result until `bash comparison_models/scripts/test_comparison_models.sh FD`
+passes on the cluster.
+
+### GPU validation already performed
+
+Environment: WSL2 Ubuntu, Python 3.10, torch 2.7.0+cu128 (`sm_120`), one
+`NVIDIA GeForce RTX 5060`. Each model ran in its own venv, satisfying
+`ensure_isolated_runtime`, against the real FD export (77,740 train / 8,821
+val images). The upstream sources were the pinned checkouts required by
+`preflight.check_git_pin`.
+
+| Model | Parameters | First-iteration loss | Peak GPU memory | 2-epoch probe | Resume |
+|---|---|---|---|---|---|
+| ViTPose-B | 85,871,620 | 0.0029182 | 1604.2 MiB | 0.0042437 → 0.0031960 | PASSED |
+| PoseBH-B (single-dataset adaptation) | 94,473,796 | 0.0019805 | 1723.8 MiB | 0.0021073 → 0.0020328 | PASSED |
+
+The probes use a small example subset, train two epochs, validate, write a full
+checkpoint, restore optimizer/scheduler/AMP/RNG state from it, and delete
+everything afterwards; no definitive run folder is created. Reproduce with:
+
+```bash
+python -m comparison_models.common.training_probe --model vitpose-b --scenario FD --train-examples 132 --val-examples 16
+python -m comparison_models.common.training_probe --model posebh-b --scenario FD --train-examples 132 --val-examples 16
+```
+
+RTMPose-M cannot be executed in that environment: MMEngine training needs mmcv
+2.x compiled with CUDA ops, and no build exists for torch 2.7 + CUDA 12.8
+(`MMCV_WITH_OPS=0` produces `mmcv-lite`, which has no `mmcv._ext`). What *can*
+be verified without those kernels is verified by
+`comparison_models/rtmpose/verify_paper_recipe.py`, which resolves the recipe
+through `_base_`, builds the real optimizer so `paramwise_cfg` is exercised,
+drives a real `Runner` over all 100 epochs to confirm the warmup/cosine
+trajectory, and builds the paper's `ExpMomentumEMA`. Its output:
+
+| Check | Result |
+|---|---|
+| Recipe values vs pinned upstream (12 compared) | all identical; only epochs, batch, init and keypoint count differ |
+| Backbone / head / preprocessor / test_cfg inheritance | matches upstream except the four documented overrides |
+| `paramwise_cfg` on a built optimizer | `norm.weight`, `norm.bias`, `stem.bias`, `fc.bias` → `weight_decay=0`; conv/linear weights → `0.05` |
+| `clip_grad` | `{'max_norm': 35, 'norm_type': 2}` applied by the wrapper |
+| Warmup | starts at `4.000000e-08`, reaches `4.000000e-03` (`base_lr`) after 1000 iterations |
+| Cosine | `4.000000e-03` at epoch 50 → `2.037492e-04` at epoch 99, floor `eta_min = 2.000000e-04 = base_lr * 0.05` |
+| EMA | `ExpMomentumEMA`, `momentum=0.0002`, `gamma=2000`, `update_buffers=True`, priority 49 |
+
+End-to-end RTMPose-M training remains gated on a machine with a full mmcv
+build; the Titan procedure in
+[`comparison_models/rtmpose/README.md`](../comparison_models/rtmpose/README.md)
+is the route to close that gate.

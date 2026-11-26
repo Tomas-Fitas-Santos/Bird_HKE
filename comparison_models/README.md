@@ -112,9 +112,12 @@ launches a 100-epoch run.
 
 **Known gap:** RTMPose-M has a real-data/model GPU preflight
 (`comparison_models.rtmpose.validate_fd`) but no disposable optimizer/resume
-mini-run harness, because its trainer is the upstream 210-epoch MMEngine
-runner. Its end-to-end training workflow is therefore **not** runtime-qualified
-and is reported as such.
+mini-run harness, because its trainer is the upstream MMEngine runner. Its
+optimizer, schedule and EMA are instead checked by
+`comparison_models/rtmpose/verify_paper_recipe.py`, which drives a real MMEngine
+`Runner` over the full 100 epochs but needs mmcv 2.x with CUDA ops for the
+actual forward/backward pass. Where that build is unavailable, end-to-end
+RTMPose-M training is **not** runtime-qualified and is reported as such.
 
 ## Upstream sources
 

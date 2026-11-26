@@ -102,5 +102,15 @@ baselines comparable with each other and with the native research models.
 | Optimizer/schedule values transcribed from pinned upstream configs | done, reviewed line by line against the upstream files |
 | Layer-decay constructor and iteration schedule unit-tested | done, CPU suite |
 | Recipe values pinned by tests | done |
-| RTMPose config loaded and executed | **not possible on this machine** — requires the pinned `.external_pose_sources/rtmpose` checkout plus mmcv 2.2.0/mmengine/mmpose, which have no Windows/Blackwell build here. Statically reviewed only. |
-| Real GPU training with the new optimizer/schedule | **outstanding** — see [Status and open gates](./COMPARISON_EXPERIMENTS.md#status-and-open-gates) |
+| ViTPose-B real GPU run with the paper optimizer/schedule | done — smoke and 2-epoch train/validate/resume probe on FD, RTX 5060 |
+| PoseBH-B real GPU run with the paper optimizer/schedule | done — smoke and 2-epoch train/validate/resume probe on FD, RTX 5060 |
+| RTMPose-M config loaded and executed | partially — `comparison_models/rtmpose/verify_paper_recipe.py` resolves the config through `_base_`, builds the real optimizer (so `paramwise_cfg` is exercised), drives a real `Runner` over all 100 epochs and builds the paper's `ExpMomentumEMA`. Full MMEngine training additionally needs mmcv 2.x with CUDA ops, for which no build exists for this torch/CUDA pair. |
+| End-to-end RTMPose-M GPU training | **outstanding** — see [Status and open gates](./COMPARISON_EXPERIMENTS.md#status-and-open-gates) |
+
+The exact upstream values the tests and scripts above are checked against:
+
+| Model | Commit | Values read from the upstream config |
+|---|---|---|
+| ViTPose-B | `c050ed2` | AdamW `5e-4`, betas `(0.9, 0.999)`, `weight_decay=0.1`, `layer_decay_num_layers=12`, `layer_decay_rate=0.75`, `grad_clip max_norm=1.`, `warmup policy='linear' warmup_iters=500 warmup_ratio=0.001`, `step=[170, 200]` of 210, `gamma=0.1` |
+| PoseBH-B | `8f03438` | AdamW `1e-3`, `weight_decay=0.1`, same layer-decay constructor and rate, `grad_clip max_norm=1.`, same warmup, `step=[50, 90]` of 100, `gamma=0.1`, `fp16 loss_scale init_scale=16384.0` |
+| RTMPose-M | `759b39c` | AdamW `lr=4e-3`, `weight_decay=0.05`, `clip_grad max_norm=35 norm_type=2`, `paramwise_cfg norm_decay_mult=0 bias_decay_mult=0 bypass_duplicate=True`, `LinearLR start_factor=1e-5` over 1000 iterations, `CosineAnnealingLR eta_min=base_lr*0.05` `begin=105 end=210 T_max=105` iter-based, `EMAHook ExpMomentumEMA momentum=0.0002 update_buffers=True priority=49`, `val_interval=10` |
