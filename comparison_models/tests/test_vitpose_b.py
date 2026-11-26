@@ -379,7 +379,7 @@ class ViTPoseProtocolTests(unittest.TestCase):
 
 
 class DataloaderWorkerTests(unittest.TestCase):
-    """FD is decode-bound, so the worker count is a documented knob."""
+    """Validation is decode-bound, so the worker count is a documented knob."""
 
     RECIPE = {"seed": 2026, "microbatch": 2}
 
