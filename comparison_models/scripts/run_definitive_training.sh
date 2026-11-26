@@ -80,6 +80,15 @@ done
 PYTHON="${COMPARISON_CLI_PYTHON:-python3}"
 OUT_ROOT="$ROOT/Bird_HKE/trained_models/External_Baselines"
 
+# On some cluster logins LD_LIBRARY_PATH points at a CUDA directory whose
+# libtinfo/libevent shadows tmux's own bundled libraries, and tmux then dies
+# on startup. Dropping it for the tmux invocation only is enough.
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+  TMUX_CMD=(env -u LD_LIBRARY_PATH tmux)
+else
+  TMUX_CMD=(tmux)
+fi
+
 run_dir_for() {
   # Mirrors preflight.prepare(): External_Baselines/<Run_Folder>/<SC>/seed_2026
   local model="${1%%:*}" scenario="${1##*:}" folder
@@ -160,6 +169,9 @@ for i in "${!LANE_GPU[@]}"; do
   gpu="${LANE_GPU[$i]}"
   lane="$(mktemp "${TMPDIR:-/tmp}/birdhke_lane$((i + 1))_gpu${gpu}_XXXXXX")"
   : > "$lane"
+  # The tmux server was started without LD_LIBRARY_PATH (see above), so put it
+  # back for the training processes themselves.
+  [ -z "${LD_LIBRARY_PATH:-}" ] || printf 'export LD_LIBRARY_PATH=%q\n' "$LD_LIBRARY_PATH" >> "$lane"
   for spec in ${LANE_SPECS[$i]}; do
     model="${spec%%:*}"; scenario="${spec##*:}"
     [ -f "$(run_dir_for "$spec")/final_model.pth" ] && continue
@@ -174,12 +186,12 @@ for i in "${!LANE_GPU[@]}"; do
   log="$OUT_ROOT/launcher_lane$((i + 1))_gpu${gpu}.log"
   win="lane$((i + 1))-gpu$gpu"
   if [ "$USE_TMUX" -eq 1 ]; then
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
-      tmux new-window -t "$SESSION" -n "$win" || die "tmux new-window failed"
+    if "${TMUX_CMD[@]}" has-session -t "$SESSION" 2>/dev/null; then
+      "${TMUX_CMD[@]}" new-window -t "$SESSION" -n "$win" || die "tmux new-window failed"
     else
-      tmux new-session -d -s "$SESSION" -c "$ROOT" -n "$win" || die "tmux failed"
+      "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -c "$ROOT" -n "$win" || die "tmux failed"
     fi
-    tmux send-keys -t "$SESSION:$win" "bash '$lane' 2>&1 | tee -a '$log'" Enter
+    "${TMUX_CMD[@]}" send-keys -t "$SESSION:$win" "bash '$lane' 2>&1 | tee -a '$log'" Enter
     echo "lane $((i + 1)) (${LANE_SPECS[$i]}) GPU=$gpu -> tmux $SESSION:$win"
   else
     bash "$lane" > "$log" 2>&1 &
@@ -190,6 +202,6 @@ done
 echo "----- lanes launched -----"
 echo "Logs:      $OUT_ROOT/launcher_lane*.log"
 if [ "$USE_TMUX" -eq 1 ]; then
-  echo "Watch:     tmux attach -t $SESSION   (Ctrl-b n cycles lanes, Ctrl-b d detaches)"
+  echo "Watch:     ${TMUX_CMD[*]} attach -t $SESSION   (Ctrl-b n cycles lanes, Ctrl-b d detaches)"
 fi
 echo "Progress:  bash comparison_models/scripts/run_definitive_training.sh --status"
