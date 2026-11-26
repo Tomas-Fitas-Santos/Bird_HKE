@@ -64,25 +64,30 @@ uncertainty must resample video sequences, not frames.
 ## Launching the definitive runs
 
 `comparison_models/scripts/run_definitive_training.sh` starts the runs in
-parallel *lanes* — one lane per GPU, sequential inside a lane, each lane in its
-own tmux window. FD is the wall-clock bottleneck (77,740 train images), so the
-intended layout keeps FD alone on the fastest card and shares a second card
-between the ~4x smaller OS and CS runs:
+parallel *lanes* — sequential inside a lane, concurrent across lanes, one tmux
+window each. Several lanes may name the same GPU, which is what makes the
+FD-first layout work: both models peak near 2 GiB, so the two FD runs share the
+fast card while the ~4x smaller OS and CS runs occupy another.
 
 ```bash
 export VITPOSE_ENV_PREFIX=$HOME/venvs/vitpose-b-cu128-venv
 export POSEBH_ENV_PREFIX=$HOME/venvs/posebh-b-cu128-venv
 export PYTHONPATH=$PWD
 
+# machine with the fast card: the two FD runs, one lane each so they overlap
 bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 8 \
-    1=vitpose-b:FD posebh-b:FD \
-    0=vitpose-b:OS posebh-b:OS vitpose-b:CS posebh-b:CS
+    1=vitpose-b:FD 1=posebh-b:FD
+
+# the other machine: OS and CS, two runs per card
+bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 4 \
+    1=vitpose-b:OS vitpose-b:CS 0=posebh-b:OS posebh-b:CS
 ```
 
 Drop `--dry-run` to launch. The script runs `cli preflight` for every requested
-run *before* touching tmux, skips any run whose `final_model.pth` already
-exists, and never overwrites one. `--status` reports DONE/PARTIAL/PENDING for
-all nine runs. An interrupted run is resumed with
+run *before* touching tmux, refuses a request that names the same run twice
+(two trainers would fight over one `seed_2026` folder), skips any run whose
+`final_model.pth` already exists, and never overwrites one. `--status` reports
+DONE/PARTIAL/PENDING for all nine runs. An interrupted run is resumed with
 `python -m comparison_models.cli resume --model M --scenario S`.
 
 ### Decode workers
@@ -91,9 +96,11 @@ Every BirdGaze sample is a full-resolution `cv2.imread` plus an affine warp and
 a heatmap rasterisation, so training is decode-bound rather than GPU-bound: at
 two workers an H100 PCIe sat at ~25 img/s for PoseBH-B while peaking at 2 GiB
 of memory. The default is now `min(8, cpu_count)`, overridable per machine with
-`BIRD_HKE_NUM_WORKERS`. Keep `lanes x workers` below the core count — the
-launcher warns when it is not, because oversubscribed decoders slow every run
-on the machine down at once.
+`BIRD_HKE_NUM_WORKERS`. Each lane runs one training at a time, so keep
+`lanes x workers` below the core count — the launcher warns when it is not,
+because oversubscribed decoders slow every run on the machine down at once. Two
+FD runs in two lanes sharing one card are two lanes, so on a 16-core machine
+`--workers 6` or `--workers 8` is the right range.
 
 The worker count is part of the reproducibility contract: each worker is seeded
 from the loader's base seed plus its own id, so changing it changes the

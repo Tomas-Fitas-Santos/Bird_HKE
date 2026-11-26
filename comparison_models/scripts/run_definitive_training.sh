@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# Launches the definitive 100-epoch comparison-model runs across GPUs.
+# Launches the definitive 100-epoch comparison-model runs in parallel lanes.
 #
-# The Full Dataset scenario is the wall-clock bottleneck (77,740 train images,
-# each one a full-resolution decode + affine warp), so the intended topology is
-# one lane holding the fastest card for FD alone, with the smaller OS/CS
-# scenarios running concurrently on another card.
+# FD is the wall-clock bottleneck (77,740 train images, each one a
+# full-resolution decode + affine warp), so the intended layout keeps the two
+# FD runs on the fastest card and puts the ~4x smaller OS/CS runs on another.
 #
-# Usage (from the repository root):
+# Usage (from the repository root, on one machine):
 #   bash comparison_models/scripts/run_definitive_training.sh [options] LANE [LANE...]
 #
-# A LANE is  GPU=SPEC [SPEC...]  where SPEC is  model:scenario. Everything in
-# one lane runs sequentially in its own tmux window; lanes run concurrently.
-# Example -- FD alone on the H100, OS+CS sharing the second card:
+# A LANE is  GPU=SPEC [SPEC...]  where SPEC is  model:scenario. Runs inside a
+# lane are sequential; lanes are concurrent, and several lanes may name the
+# same GPU (both models peak near 2 GiB, so they comfortably share a card).
+# Each lane gets its own tmux window.
 #
+#   # both FD runs sharing the H100, one lane each so they overlap
 #   bash comparison_models/scripts/run_definitive_training.sh --workers 8 \
-#       1=vitpose-b:FD posebh-b:FD \
-#       0=vitpose-b:OS posebh-b:OS vitpose-b:CS posebh-b:CS
+#       1=vitpose-b:FD 1=posebh-b:FD
+#
+#   # on the other machine: OS then CS, sharing one card
+#   bash comparison_models/scripts/run_definitive_training.sh --workers 4 \
+#       1=vitpose-b:OS vitpose-b:CS 0=posebh-b:OS posebh-b:CS
 #
 # Options:
-#   --workers N    decode workers per run (default 8). Runs sharing a machine
-#                  compete for CPU, so keep concurrent_lanes*workers below the
-#                  core count; the script warns when it does not.
+#   --workers N    decode workers per run (default 8). Lanes sharing a machine
+#                  compete for CPU, so keep lanes*workers below the core count;
+#                  the script warns when it does not.
 #   --session NAME tmux session name (default birdhke-train)
 #   --no-tmux      run in the foreground, lanes backgrounded with &
 #   --dry-run      print the lane scripts without starting anything
@@ -43,9 +47,8 @@ SESSION="birdhke-train"
 DRY_RUN=0
 USE_TMUX=1
 STATUS_ONLY=0
-GPUS=()
-SPECS=()
-LAST_GPU=""
+LANE_GPU=()      # one entry per lane: the CUDA_VISIBLE_DEVICES value
+LANE_SPECS=()   # one entry per lane: space-separated model:scenario list
 
 die() { echo "LAUNCHER REFUSED: $*" >&2; exit 2; }
 
@@ -56,20 +59,20 @@ while [ $# -gt 0 ]; do
     --no-tmux) USE_TMUX=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --status)  STATUS_ONLY=1; shift ;;
-    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *=*)
       gpu="${1%%=*}"; rest="${1#*=}"
       case "$gpu" in ''|*[!0-9]*) die "lane GPU must be a number, got '$gpu'" ;; esac
-      LAST_GPU="$gpu"
       for spec in $rest; do
         case "$spec" in *:*) ;; *) die "lane entry '$spec' is not model:scenario" ;; esac
-        GPUS+=("$gpu"); SPECS+=("$spec")
       done
-      shift ;;
+      [ -n "$rest" ] || die "lane '$1' names no runs"
+      LANE_GPU+=("$gpu"); LANE_SPECS+=("$rest"); shift ;;
     *:*)
       # Continuation of the previous lane: "1=vitpose-b:FD posebh-b:FD".
-      [ -n "$LAST_GPU" ] || die "first argument must name a lane GPU, e.g. 1=vitpose-b:FD"
-      GPUS+=("$LAST_GPU"); SPECS+=("$1"); shift ;;
+      [ ${#LANE_GPU[@]} -gt 0 ] || die "first argument must name a lane GPU, e.g. 1=vitpose-b:FD"
+      LANE_SPECS[$(( ${#LANE_GPU[@]} - 1 ))]="${LANE_SPECS[$(( ${#LANE_GPU[@]} - 1 ))]} $1"
+      shift ;;
     *) die "unknown argument '$1' (lanes look like 1=vitpose-b:FD)" ;;
   esac
 done
@@ -104,11 +107,16 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-[ ${#SPECS[@]} -gt 0 ] || die "no lanes given; pass --help"
+[ ${#LANE_GPU[@]} -gt 0 ] || die "no lanes given; pass --help"
+
+# Every run must be unique: two concurrent trainers on one seed_2026 folder
+# would fight over the same checkpoint even though each refuses to overwrite.
+ALL_SPECS="$(printf '%s\n' "${LANE_SPECS[@]}" | tr ' ' '\n' | grep -v '^$')"
+DUPES="$(printf '%s\n' "$ALL_SPECS" | sort | uniq -d)"
+[ -z "$DUPES" ] || die "duplicate run(s) requested: $(echo $DUPES)"
 
 # --- pre-flight: refuse before tmux exists, not halfway through a lane ------
-QUEUED=()
-for spec in "${SPECS[@]}"; do
+for spec in $ALL_SPECS; do
   model="${spec%%:*}"; scenario="${spec##*:}"
   case "$spec" in rtmpose-m:OS|rtmpose-m:CS) die "rtmpose-m is only validated for FD" ;; esac
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -126,25 +134,20 @@ for spec in "${SPECS[@]}"; do
       "$PYTHON" -m comparison_models.cli preflight --model "$model" --scenario "$scenario" \
         || die "preflight failed for $spec"
   fi
-  QUEUED+=("$spec")
 done
 
-[ ${#QUEUED[@]} -gt 0 ] || { echo "----- nothing left to run -----"; exit 0; }
-
 CORES="$(nproc 2>/dev/null || echo 0)"
-LANES="$(printf '%s\n' "${GPUS[@]}" | sort -u | wc -l | tr -d ' ')"
-if [ "$CORES" -gt 0 ] && [ $((LANES * WORKERS)) -gt "$CORES" ]; then
-  echo "WARNING: $LANES concurrent lanes x $WORKERS workers > $CORES cores." >&2
+# Each lane runs one training at a time, so lanes are the concurrency, not runs.
+if [ "$CORES" -gt 0 ] && [ $(( ${#LANE_GPU[@]} * WORKERS)) -gt "$CORES" ]; then
+  echo "WARNING: ${#LANE_GPU[@]} concurrent lanes x $WORKERS workers > $CORES cores." >&2
   echo "         Lower --workers; oversubscribed decoders slow every run down." >&2
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  for gpu in $(printf '%s\n' "${GPUS[@]}" | sort -u); do
-    echo "--- lane GPU=$gpu ---"
-    for i in "${!GPUS[@]}"; do
-      [ "${GPUS[$i]}" = "$gpu" ] || continue
-      spec="${SPECS[$i]}"
-      echo "CUDA_VISIBLE_DEVICES=$gpu BIRD_HKE_NUM_WORKERS=$WORKERS \\"
+  for i in "${!LANE_GPU[@]}"; do
+    echo "--- lane $((i + 1)) on GPU ${LANE_GPU[$i]} ---"
+    for spec in ${LANE_SPECS[$i]}; do
+      echo "CUDA_VISIBLE_DEVICES=${LANE_GPU[$i]} BIRD_HKE_NUM_WORKERS=$WORKERS \\"
       echo "  $PYTHON -m comparison_models.cli train --model ${spec%%:*} --scenario ${spec##*:}"
     done
   done
@@ -153,14 +156,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 mkdir -p "$OUT_ROOT"
-for gpu in $(printf '%s\n' "${GPUS[@]}" | sort -u); do
-  lane="$(mktemp "${TMPDIR:-/tmp}/birdhke_lane_gpu${gpu}_XXXXXX")"
+for i in "${!LANE_GPU[@]}"; do
+  gpu="${LANE_GPU[$i]}"
+  lane="$(mktemp "${TMPDIR:-/tmp}/birdhke_lane$((i + 1))_gpu${gpu}_XXXXXX")"
   : > "$lane"
-  for i in "${!GPUS[@]}"; do
-    [ "${GPUS[$i]}" = "$gpu" ] || continue
-    spec="${SPECS[$i]}"; model="${spec%%:*}"; scenario="${spec##*:}"
+  for spec in ${LANE_SPECS[$i]}; do
+    model="${spec%%:*}"; scenario="${spec##*:}"
     [ -f "$(run_dir_for "$spec")/final_model.pth" ] && continue
-    log="$OUT_ROOT/launcher_${model}_${scenario}_gpu${gpu}.log"
     {
       echo "echo '=== $spec on GPU $gpu workers=$WORKERS start='\$(date -Is)"
       echo "CUDA_VISIBLE_DEVICES=$gpu BIRD_HKE_NUM_WORKERS=$WORKERS \\"
@@ -169,22 +171,24 @@ for gpu in $(printf '%s\n' "${GPUS[@]}" | sort -u); do
     } >> "$lane"
   done
   [ -s "$lane" ] || { rm -f "$lane"; continue; }
+  log="$OUT_ROOT/launcher_lane$((i + 1))_gpu${gpu}.log"
+  win="lane$((i + 1))-gpu$gpu"
   if [ "$USE_TMUX" -eq 1 ]; then
     if tmux has-session -t "$SESSION" 2>/dev/null; then
-      tmux new-window -t "$SESSION" -n "gpu$gpu" || die "tmux new-window failed"
+      tmux new-window -t "$SESSION" -n "$win" || die "tmux new-window failed"
     else
-      tmux new-session -d -s "$SESSION" -c "$ROOT" -n "gpu$gpu" || die "tmux failed"
+      tmux new-session -d -s "$SESSION" -c "$ROOT" -n "$win" || die "tmux failed"
     fi
-    tmux send-keys -t "$SESSION:gpu$gpu" "bash '$lane' 2>&1 | tee -a '$OUT_ROOT/launcher_gpu${gpu}.log'" Enter
-    echo "lane GPU=$gpu -> tmux $SESSION:gpu$gpu"
+    tmux send-keys -t "$SESSION:$win" "bash '$lane' 2>&1 | tee -a '$log'" Enter
+    echo "lane $((i + 1)) (${LANE_SPECS[$i]}) GPU=$gpu -> tmux $SESSION:$win"
   else
-    bash "$lane" > "$OUT_ROOT/launcher_gpu${gpu}.log" 2>&1 &
-    echo "lane GPU=$gpu -> pid $!"
+    bash "$lane" > "$log" 2>&1 &
+    echo "lane $((i + 1)) (${LANE_SPECS[$i]}) GPU=$gpu -> pid $!"
   fi
 done
 
 echo "----- lanes launched -----"
-echo "Logs:      $OUT_ROOT/launcher_*.log"
+echo "Logs:      $OUT_ROOT/launcher_lane*.log"
 if [ "$USE_TMUX" -eq 1 ]; then
   echo "Watch:     tmux attach -t $SESSION   (Ctrl-b n cycles lanes, Ctrl-b d detaches)"
 fi
