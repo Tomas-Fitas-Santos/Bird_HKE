@@ -93,20 +93,61 @@ DONE/PARTIAL/PENDING for all nine runs. An interrupted run is resumed with
 ### Decode workers
 
 Every BirdGaze sample is a full-resolution `cv2.imread` plus an affine warp and
-a heatmap rasterisation, so training is decode-bound rather than GPU-bound: at
-two workers an H100 PCIe sat at ~25 img/s for PoseBH-B while peaking at 2 GiB
-of memory. The default is now `min(8, cpu_count)`, overridable per machine with
+a heatmap rasterisation, so **validation** is decode-bound. Raising the worker
+count from 2 to 8 on an H100 PCIe took validation from 57.8 to 92.7 img/s, the
+expected win. The default is `min(8, cpu_count)`, overridable per machine with
 `BIRD_HKE_NUM_WORKERS`. Each lane runs one training at a time, so keep
 `lanes x workers` below the core count — the launcher warns when it is not,
-because oversubscribed decoders slow every run on the machine down at once. Two
-FD runs in two lanes sharing one card are two lanes, so on a 16-core machine
-`--workers 6` or `--workers 8` is the right range.
+because oversubscribed decoders slow every run on the machine down at once.
+
+**Training is not decode-bound.** The same change left PoseBH-B FD training at
+24.4 img/s (it was 25.1 at two workers), while validation on the identical
+dataset, decode path and worker count nearly doubled. The decoder can therefore
+feed training comfortably; something inside the training loop is the limit. The
+earlier claim in this file that FD was "entirely decode-bound" was wrong and is
+kept here only as a correction. `comparison_models.common.bottleneck_probe`
+measures the remaining candidates instead of guessing at them.
 
 The worker count is part of the reproducibility contract: each worker is seeded
 from the loader's base seed plus its own id, so changing it changes the
 augmentation stream. It is therefore recorded in `runtime_fingerprint()` inside
 the run manifest, and `--resume` refuses if it differs from the value the run
 started with. Fix the count for a given run before the first epoch.
+
+### Resume is pinned to the machine
+
+`--resume` compares the *whole* run manifest against a freshly built one, and
+the manifest embeds `runtime_fingerprint()`. A run therefore cannot be resumed
+on a different GPU model, a different torch/CUDA/numpy/OpenCV build, a different
+worker count, or after any file in that model's `IMPLEMENTATION_FILES` changes.
+This is deliberate — it is what makes a resumed run bit-comparable — but it has
+two operational consequences:
+
+* a run cannot be migrated to a faster or idle card mid-flight; and
+* a code change to the training loop is not resume-compatible, so a speedup can
+  only ever be applied to a **fresh** run.
+
+Decide the machine and worker count before epoch 1.
+
+### Measuring the training bottleneck
+
+`bottleneck_probe` is read-only, writes nothing, touches no run directory, and
+is deliberately excluded from `IMPLEMENTATION_FILES`, so it cannot invalidate a
+live run's fingerprint. It times four things and reports the ratio that matters:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 $POSEBH_ENV_PREFIX/bin/python \
+  -m comparison_models.common.bottleneck_probe --model posebh-b --scenario FD
+```
+
+`sync_speedup_available` compares a faithful copy of the production epoch
+against an identical copy whose per-microbatch `Tensor.item()` metric reads are
+hoisted to the end of the epoch. Gradients, the optimizer and the schedule are
+untouched in both, so a value above ~1.2 means the host synchronisations are
+costing real time and removing them is a numerics-preserving speedup.
+`determinism_speedup_available` compares the same GPU work with determinism
+relaxed (TF32 and `cudnn.benchmark` on); a large value there is a
+reproducibility decision, not a free speedup.
 
 ## Status and open gates
 
