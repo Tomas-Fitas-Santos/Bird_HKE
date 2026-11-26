@@ -77,3 +77,5 @@ jobs:
         run: python -m unittest discover -s comparison_models/tests -t . -p 'test_posebh_b.py' -v
       - name: Run training integration probe CPU contract tests
         run: python -m unittest discover -s comparison_models/tests -t . -p 'test_baseline_training_probe.py' -v
+      - name: Run paper-faithful optimizer and LR schedule tests
+        run: python -m unittest discover -s comparison_models/tests -t . -p 'test_paper_faithful_training.py' -v
