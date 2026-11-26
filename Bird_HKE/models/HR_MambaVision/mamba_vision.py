@@ -101,12 +101,18 @@ class MambaVision(BaseBackbone):
                     bkwargs = dict(kwargs)
                     bkwargs.setdefault('in_chans', in_chans)
                     bkwargs.setdefault('resolution', img_size)
+                    # This adapter consumes spatial backbone features directly;
+                    # the upstream ImageNet classifier is never executed.
+                    # Do not register an unused classifier in the pose model or
+                    # inflate its reported parameter count.
+                    bkwargs.setdefault('num_classes', 0)
                     custom_cfg = bkwargs.pop('custom_cfg', {})
                     self.mv = _build_mamba_CUSTOM(pretrained=pretrained, custom_cfg=custom_cfg, **bkwargs)
                 elif variant_key in available_builders:
                     bkwargs = dict(kwargs)
                     bkwargs.setdefault('in_chans', in_chans)
                     bkwargs.setdefault('resolution', img_size)
+                    bkwargs.setdefault('num_classes', 0)
                     self.mv = available_builders[variant_key](pretrained=pretrained, **bkwargs)
                 else:
                     valid = sorted(list(available_builders.keys()) + ['CUSTOM'])

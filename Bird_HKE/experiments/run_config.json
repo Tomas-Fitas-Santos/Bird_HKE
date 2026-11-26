@@ -12,9 +12,9 @@
         "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_CS.yaml",
         "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_OS.yaml",
         "Bird_HKE/experiments/HR_MambaVision/hr_mamba_vision_FD.yaml",
-        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_CS.yaml",
-        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_OS.yaml",
-        "Bird_HKE/experiments/HR_MambaVit/hr_mamba_vit_FD.yaml",
+        "Bird_HKE/experiments/HR_MambaViT/hr_mamba_vit_CS.yaml",
+        "Bird_HKE/experiments/HR_MambaViT/hr_mamba_vit_OS.yaml",
+        "Bird_HKE/experiments/HR_MambaViT/hr_mamba_vit_FD.yaml",
         "Bird_HKE/experiments/VHR_BirdPose/vhr_b_CS.yaml",
         "Bird_HKE/experiments/VHR_BirdPose/vhr_b_OS.yaml",
         "Bird_HKE/experiments/VHR_BirdPose/vhr_b_FD.yaml"

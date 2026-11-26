@@ -10,7 +10,8 @@ import torch
 from pathlib import Path
 
 from lib.config import cfg
-from lib.core.function import get_final_preds
+from lib.core.inference import get_pose_output_preds
+from lib.core.inference import get_pose_output_uncertainty
 from lib.core.inference import reset_score_stats, print_score_stats
 from lib.utilities.transforms import get_affine_transform
 from .pose_filters import Validation_Smoothing_Filter, One_Euro_Custom_Filter
@@ -53,6 +54,7 @@ class PoseEstimator:
         self.fps = fps
         self.total_time = total_time
         self.bbox_expand = float(bbox_expand)
+        self._last_uncertainty = None
         
         # Filter configuration
         self.filter_type = filter_type.lower()
@@ -102,6 +104,7 @@ class PoseEstimator:
             'poses_final': [],
             'scores_initial': [],
             'scores_final': [],
+            'uncertainties_initial': [],
             'frames_initial': [],
             'frames_final': [],
             'motion_data': {
@@ -148,6 +151,7 @@ class PoseEstimator:
                 pose_init, score_init, frame_init = self._estimate_initial_pose(
                     frame, frame_idx, bboxes, write_initial
                 )
+                uncertainty_init = copy.deepcopy(self._last_uncertainty)
                 if pose_init is not None:
                     pose_count += 1
 
@@ -184,7 +188,7 @@ class PoseEstimator:
                     results,
                     pose_init, pose_filtered, pose_final,
                     score_init, score_final,
-                    frame_init, frame_final
+                    frame_init, frame_final, uncertainty_init
                 )
                 
                 # Update previous states
@@ -211,6 +215,7 @@ class PoseEstimator:
         
         for frame_idx, frame in enumerate(frames):
             print(f"Processing frame {frame_idx+1}/{len(frames)}", end='\r')
+            uncertainty_init = None
             
             if not bboxes or frame_idx >= len(bboxes) or not bboxes[frame_idx]:
                 all_poses.append(None)
@@ -220,6 +225,7 @@ class PoseEstimator:
                 pose_init, score_init, frame_init = self._estimate_initial_pose(
                     frame, frame_idx, bboxes, write_initial
                 )
+                uncertainty_init = copy.deepcopy(self._last_uncertainty)
                 all_poses.append(pose_init)
                 all_scores.append(score_init)
                 if pose_init is not None:
@@ -228,6 +234,7 @@ class PoseEstimator:
             # Store initial results
             self._append_pose(results['poses_initial'], pose_init)
             results['scores_initial'].append(score_init)
+            results['uncertainties_initial'].append(uncertainty_init)
             results['frames_initial'].append(frame_init)
         
         print()  # New line after progress
@@ -322,6 +329,7 @@ class PoseEstimator:
     
     def _estimate_initial_pose(self, frame, frame_idx, bboxes, write_images):
         """Estimate initial pose from bounding box."""
+        self._last_uncertainty = None
         if not bboxes[frame_idx]:
             return None, None, frame
         
@@ -393,18 +401,35 @@ class PoseEstimator:
                 pass
         
         # Transform for model
-        model_input = POSE_TRANSFORM(model_input).unsqueeze(0)
+        model_input = POSE_TRANSFORM(model_input).unsqueeze(0).to(self.device)
         
         # Inference
         self.model.eval()
         with torch.no_grad():
             output = self.model(model_input)
-            pose, score = get_final_preds(
+            pose, score = get_pose_output_preds(
                 cfg,
-                output.clone().cpu().numpy(),
+                output,
                 np.asarray([center]),
                 np.asarray([scale])
             )
+            uncertainty = get_pose_output_uncertainty(
+                cfg,
+                output,
+                np.asarray([center]),
+                np.asarray([scale]),
+            )
+            if uncertainty is not None:
+                def first_sample(value):
+                    if value is None:
+                        return None
+                    first = value[0]
+                    return first.tolist() if hasattr(first, 'tolist') else first
+
+                self._last_uncertainty = {
+                    key: first_sample(value)
+                    for key, value in uncertainty.items()
+                }
         return pose, score
     
     def _draw_pose(self, frame, pose, score, frame_idx, stage):
@@ -494,7 +519,8 @@ class PoseEstimator:
         motion_data['cross_products'].append(0.0)
     
     def _append_results(self, results, pose_init, pose_filt, pose_final,
-                       score_init, score_final, frame_init, frame_final):
+                       score_init, score_final, frame_init, frame_final,
+                       uncertainty_init=None):
         """Append results to storage."""
         self._append_pose(results['poses_initial'], pose_init)
         self._append_pose(results['poses_filtered'], pose_filt)
@@ -502,6 +528,7 @@ class PoseEstimator:
         
         results['scores_initial'].append(score_init)
         results['scores_final'].append(score_final)
+        results['uncertainties_initial'].append(uncertainty_init)
         
         results['frames_initial'].append(frame_init)
         results['frames_final'].append(frame_final)
@@ -514,6 +541,7 @@ class PoseEstimator:
         
         results['scores_initial'].append(None)
         results['scores_final'].append(None)
+        results['uncertainties_initial'].append(None)
         
         results['frames_initial'].append(frame)
         results['frames_final'].append(frame)

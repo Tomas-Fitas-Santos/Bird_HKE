@@ -15,8 +15,14 @@ Bird_HKE/experiments/*results*.csv
 Bird_HKE/experiments/hypothesis_*.csv
 Bird_HKE/*.zip
 
-# Local data and models (not versioned)
+# Training datasets
 BirdGaze_v2/
+BirdGaze_v2.zip
+birdgaze_full_dataset/
+birdgaze_original_subset/
+birdgaze_corrected_subset/
+
+# Local data and models (not versioned)
 Bird_HKE/videos/
 Bird_HKE/trained_models/
 Bird_HKE/yolov8n.pt
@@ -28,3 +34,14 @@ Bird_HKE/*.pth
 .idea/
 .DS_Store
 Thumbs.db
+
+# Pinned external source checkouts (managed by
+# comparison_models/scripts/setup_external_pose_sources.sh)
+/.external_pose_sources/
+
+# Generated, reproducible COCO annotation exports shared by the comparison
+# models (comparison_models/common/birdgaze/conversion.py)
+/comparison_models/generated/
+
+# Disposable real-training integration probes (auto-removed scratch dirs)
+/Bird_HKE/trained_models/External_Baselines/_Training_Probes/

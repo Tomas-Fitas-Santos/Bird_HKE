@@ -11,9 +11,15 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
+import json
 import time
 import os
-import re
+import shlex
+import tempfile
+
+# Deterministic cuBLAS requires this before any imported CUDA extension can
+# initialize a context.
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 
 import torch
 import torch.nn.parallel
@@ -23,7 +29,6 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 
-import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -35,13 +40,27 @@ warnings.filterwarnings('ignore', category=FutureWarning,
 warnings.filterwarnings('ignore', category=FutureWarning,
                         message='Importing from timm.models.layers is deprecated')
 from lib.config.default import update_config
-from lib.core.loss import JointsMSELoss
+from lib.core.loss import build_pose_criterion
 from lib.core.function import train
 from lib.core.function import validate
 from lib.utilities.utilities import get_optimizer
 from lib.utilities.utilities import save_checkpoint
+from lib.utilities.utilities import atomic_torch_save
 from lib.utilities.utilities import create_logger
-from lib.utilities.utilities import get_model_summary
+from lib.utilities.model_complexity import profile_model_complexity
+from lib.utilities.model_complexity import write_model_complexity_json
+from lib.utilities.reproducibility import capture_rng_state
+from lib.utilities.reproducibility import atomic_write_json
+from lib.utilities.reproducibility import environment_report
+from lib.utilities.reproducibility import protocol_hash
+from lib.utilities.reproducibility import resolve_batch_plan
+from lib.utilities.reproducibility import resume_environment
+from lib.utilities.reproducibility import restore_rng_state
+from lib.utilities.reproducibility import seed_everything
+from lib.utilities.reproducibility import seed_worker
+from lib.utilities.reproducibility import training_protocol
+from lib.utilities.reproducibility import validate_resume_protocol
+from lib.utilities.reproducibility import utc_timestamp
 
 
 from models import get_pose_net
@@ -74,11 +93,6 @@ def parse_args():
                         help='log directory',
                         type=str,
                         default='')
-    parser.add_argument('--prevModelDir',
-                        help='prev Model directory',
-                        type=str,
-                        default='')
-
     args = parser.parse_args()
 
     return args
@@ -109,9 +123,11 @@ def _adapt_state_dict_for_model(model, state_dict):
     return adapted
 
 
-def _load_state_dict_with_report(model, state_dict, logger, context='checkpoint'):
+def _load_state_dict_with_report(
+    model, state_dict, logger, context='checkpoint', strict=False
+):
     state_dict = _adapt_state_dict_for_model(model, state_dict)
-    incompatible = model.load_state_dict(state_dict, strict=False)
+    incompatible = model.load_state_dict(state_dict, strict=strict)
 
     missing = list(getattr(incompatible, 'missing_keys', []))
     unexpected = list(getattr(incompatible, 'unexpected_keys', []))
@@ -124,11 +140,164 @@ def _load_state_dict_with_report(model, state_dict, logger, context='checkpoint'
         loaded_ratio, context, loaded_keys, total_keys, len(missing), len(unexpected)
     )
 
+
+def _atomic_write_text(path, text):
+    destination = os.path.abspath(path)
+    directory = os.path.dirname(destination)
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f'.{os.path.basename(destination)}.',
+        suffix='.tmp',
+        dir=directory,
+        text=True,
+    )
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _epoch_number(line):
+    try:
+        return int(line.split('\t', 1)[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric_map(values):
+    if values is None:
+        return {}
+    if hasattr(values, 'get'):
+        return values
+    if isinstance(values, list):
+        for item in values:
+            if hasattr(item, 'get') and 'Mean' in item:
+                return item
+        for item in values:
+            if hasattr(item, 'get'):
+                return item
+        try:
+            return dict(values)
+        except Exception:
+            return {}
+    return {}
+
+
+def _rewrite_train_logs(
+    logs_file, best_epoch_val, best_perf_val, best_values, epoch_line=None
+):
+    """Upsert an epoch row and atomically regenerate the run summary."""
+    try:
+        lines = []
+        if os.path.exists(logs_file):
+            with open(logs_file, 'r', encoding='utf-8') as handle:
+                lines = [line.rstrip('\n') for line in handle]
+
+        for index, line in enumerate(lines):
+            if line.strip() == '# Summary':
+                lines = lines[:index]
+                break
+
+        header = 'epoch\thead\teyes\tmouth\tmean\ttrain_time_s\tvalidation_time_s'
+        rows = [line for line in lines if _epoch_number(line) is not None]
+        if epoch_line:
+            new_epoch = _epoch_number(epoch_line)
+            rows = [line for line in rows if _epoch_number(line) != new_epoch]
+            rows.append(epoch_line.rstrip('\n'))
+        rows.sort(key=_epoch_number)
+
+        train_times = []
+        validation_times = []
+        for row in rows:
+            columns = row.split('\t')
+            if len(columns) >= 7:
+                try:
+                    train_times.append(float(columns[5]))
+                    validation_times.append(float(columns[6]))
+                except ValueError:
+                    pass
+
+        avg_train_time = (
+            sum(train_times) / len(train_times) if train_times else 0.0
+        )
+        avg_validation_time = (
+            sum(validation_times) / len(validation_times)
+            if validation_times else 0.0
+        )
+        output = [header, *rows, '', '# Summary']
+        output.append(f'Avg epoch train time (s): {avg_train_time:.4f}')
+        output.append(
+            f'Avg epoch test time (s): {avg_validation_time:.4f}'
+        )
+        if best_epoch_val is not None:
+            output.append(
+                f'Best epoch: {best_epoch_val} (perf={float(best_perf_val):.6f})'
+            )
+            metrics = _metric_map(best_values)
+            output.append(
+                'Best epoch accuracies - Head: {0:.6f}, Eyes: {1:.6f}, '
+                'Mouth: {2:.6f}, Mean: {3:.6f}'.format(
+                    float(metrics.get('Head', 0.0)),
+                    float(metrics.get('Eyes', 0.0)),
+                    float(metrics.get('Mouth', 0.0)),
+                    float(metrics.get('Mean', 0.0)),
+                )
+            )
+        else:
+            output.append('Best epoch: N/A')
+        _atomic_write_text(logs_file, '\n'.join(output).rstrip() + '\n')
+    except Exception as exc:
+        logger.warning('Failed to update train_logs summary: %s', exc)
+
+
+def _update_attempt(history_file, attempt_index, **updates):
+    try:
+        with open(history_file, 'r', encoding='utf-8') as handle:
+            history = json.load(handle)
+    except FileNotFoundError:
+        history = []
+    history[attempt_index].update(updates)
+    atomic_write_json(history_file, history)
+
 def main():
 
     args = parse_args()
 
     update_config(cfg, args)
+
+    use_cuda = torch.cuda.is_available() and len(cfg.GPUS) > 0
+    if use_cuda:
+        available_devices = torch.cuda.device_count()
+        invalid_devices = [gpu for gpu in cfg.GPUS if gpu < 0 or gpu >= available_devices]
+        if invalid_devices:
+            raise ValueError(
+                f'Configured GPU ids {invalid_devices} are unavailable; '
+                f'this host exposes {available_devices} CUDA device(s).'
+            )
+        torch.cuda.set_device(cfg.GPUS[0])
+    active_devices = len(cfg.GPUS) if use_cuda else 1
+    batch_plan = resolve_batch_plan(cfg.TRAIN, active_devices)
+    seed_everything(
+        cfg.REPRODUCIBILITY.SEED,
+        deterministic_algorithms=cfg.REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS,
+        warn_only=cfg.REPRODUCIBILITY.WARN_ONLY,
+    )
+
+    # cudnn related setting
+    cudnn.benchmark = cfg.CUDNN.BENCHMARK
+    torch.backends.cudnn.deterministic = cfg.CUDNN.DETERMINISTIC
+    torch.backends.cudnn.enabled = cfg.CUDNN.ENABLED
+    torch.backends.cuda.matmul.allow_tf32 = cfg.REPRODUCIBILITY.ALLOW_TF32
+    torch.backends.cudnn.allow_tf32 = cfg.REPRODUCIBILITY.ALLOW_TF32
+    torch.set_float32_matmul_precision(cfg.REPRODUCIBILITY.MATMUL_PRECISION)
 
     logger, final_output_dir, tb_log_dir = create_logger(
         cfg = cfg, cfg_name = 'config', root_choice='log')
@@ -142,52 +311,80 @@ def main():
     else:
         ckpt_dir = base_dir
     os.makedirs(ckpt_dir, exist_ok=True)
-    
-    logger.info(cfg)
 
-    # cudnn related setting
-    cudnn.benchmark = cfg.CUDNN.BENCHMARK
-    torch.backends.cudnn.deterministic = cfg.CUDNN.DETERMINISTIC
-    torch.backends.cudnn.enabled = cfg.CUDNN.ENABLED
+    run_environment = environment_report(cfg, batch_plan)
+    current_protocol = training_protocol(cfg, batch_plan)
+    current_protocol_hash = protocol_hash(current_protocol)
+    current_resume_environment = resume_environment(run_environment)
+    # The working-tree status and Git revision are provenance metadata only.
+    # Resume compatibility is enforced by the saved training protocol hash.
+    os.makedirs(base_dir, exist_ok=True)
+    _atomic_write_text(os.path.join(base_dir, 'resolved_config.yaml'), cfg.dump())
+    atomic_write_json(os.path.join(base_dir, 'environment.json'), run_environment)
+
+    logger.info(cfg)
+    logger.info(
+        'Resolved batch: %d device(s) x %d samples x %d accumulation = %d',
+        batch_plan.devices,
+        batch_plan.batch_size_per_device,
+        batch_plan.accumulation_steps,
+        batch_plan.effective_batch_size,
+    )
+    logger.info('Training protocol hash: %s', current_protocol_hash)
 
     
     model = get_pose_net(cfg, is_train=True)
-    # log model summary, params, flops and memory usage
+    # Log and persist parameter/compute accounting before training.  Strict
+    # runs abort if this report cannot be produced so every published run has
+    # a matching complexity artifact.
     try:
-        # prepare device and dummy input
-        use_cuda = torch.cuda.is_available() and len(cfg.GPUS) > 0
         device = torch.device('cuda' if use_cuda else 'cpu')
-        img_h, img_w = cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE') else (256, 256)
-        dummy = torch.randn(1, 3, img_h, img_w).to(device)
+        img_w, img_h = (
+            cfg.MODEL.IMAGE_SIZE
+            if hasattr(cfg.MODEL, 'IMAGE_SIZE')
+            else (256, 256)
+        )
+        dummy = torch.zeros(1, 3, img_h, img_w, device=device)
 
-        # move model to device for accurate memory/summary
         model.to(device)
-
-        summary = get_model_summary(model, dummy, verbose=False)
+        complexity = profile_model_complexity(model, dummy)
+        summary = complexity.format(verbose=True)
         logger.info('%s', summary)
-        # Save model summary and config to the root LOG_DIR (no subfolders)
         try:
             os.makedirs(base_dir, exist_ok=True)
-            with open(os.path.join(base_dir, 'model_summary.txt'), 'w', encoding='utf-8') as f:
-                f.write(summary)
+            _atomic_write_text(os.path.join(base_dir, 'model_summary.txt'), summary)
+            write_model_complexity_json(
+                os.path.join(base_dir, 'model_complexity.json'),
+                complexity,
+                metadata={
+                    'config_file': os.path.normpath(args.cfg),
+                    'model_name': str(cfg.MODEL.NAME),
+                    'uncertainty_enabled': bool(cfg.UNCERTAINTY.ENABLED),
+                    'git_revision': run_environment.get('git_revision'),
+                    'training_protocol_hash': current_protocol_hash,
+                },
+            )
         except Exception:
-            logger.warning('Failed to write model_summary.txt')
+            logger.exception('Failed to write model complexity artifacts')
+            raise
         # Copy the YAML config used for this run into LOG_DIR
         try:
-            import shutil as _sh
-            _sh.copyfile(args.cfg, os.path.join(base_dir, 'model_config.txt'))
+            with open(args.cfg, 'r', encoding='utf-8') as handle:
+                source_config = handle.read()
+            _atomic_write_text(
+                os.path.join(base_dir, 'model_config.txt'), source_config
+            )
         except Exception:
             logger.warning('Failed to write model_config.txt')
 
-        # total parameters
-        total_params = sum(p.numel() for p in model.parameters())
-        logger.info('Total parameters: %.2fM', total_params / 1e6)
-
-        # try to parse GFLOPs from summary
-        m = re.search(r'Total Multiply Adds .*?:\s*([0-9,\.]+) GFLOPs', summary)
-        if m:
-            flops = float(m.group(1).replace(',', ''))
-            logger.info('Approx GFLOPs (conv+linear): %s', flops)
+        logger.info(
+            'Model complexity: %.6fM trainable / %.6fM total parameters; '
+            '%.6f GMACs; %.6f GFLOPs',
+            complexity.trainable_parameters / 1e6,
+            complexity.total_parameters / 1e6,
+            complexity.gmacs,
+            complexity.gflops,
+        )
 
         # cuda memory usage (MB)
         if use_cuda:
@@ -202,7 +399,12 @@ def main():
             except Exception:
                 logger.info('CUDA memory query failed')
     except Exception as e:
-        logger.warning('Model summary/logging failed: %s', e)
+        logger.exception('Model complexity profiling failed: %s', e)
+        if bool(cfg.REPRODUCIBILITY.STRICT):
+            raise RuntimeError(
+                'Strict reproducibility requires a valid model-complexity '
+                'report before training starts.'
+            ) from e
 
     # wrap for multi-gpu and move to cuda if available
     if torch.cuda.is_available() and len(cfg.GPUS) > 0:
@@ -210,9 +412,13 @@ def main():
     else:
         model = torch.nn.DataParallel(model, device_ids=cfg.GPUS)
 
-    criterion = JointsMSELoss(
-        use_target_weight=cfg.LOSS.USE_TARGET_WEIGHT
-    ).cuda()
+    criterion_device = torch.device('cuda' if use_cuda else 'cpu')
+    criterion = build_pose_criterion(cfg).to(criterion_device)
+    logger.info(
+        'Uncertainty modelling: %s; criterion: %s',
+        'enabled' if cfg.UNCERTAINTY.ENABLED else 'disabled',
+        criterion.__class__.__name__,
+    )
 
     # Data loading code
     normalize = transforms.Normalize(
@@ -236,21 +442,51 @@ def main():
         ])
     )    
 
+    train_generator = torch.Generator()
+    train_generator.manual_seed(int(cfg.REPRODUCIBILITY.SEED))
+    validation_generator = torch.Generator()
+    validation_generator.manual_seed(int(cfg.REPRODUCIBILITY.SEED) + 1)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=cfg.TRAIN.BATCH_SIZE_PER_GPU*len(cfg.GPUS),
+        batch_size=batch_plan.global_micro_batch,
         shuffle=cfg.TRAIN.SHUFFLE,
         num_workers=cfg.WORKERS,
-        pin_memory=cfg.PIN_MEMORY
+        pin_memory=cfg.PIN_MEMORY,
+        drop_last=cfg.TRAIN.DROP_LAST,
+        worker_init_fn=seed_worker,
+        generator=train_generator,
     )  
 
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset,
-        batch_size=cfg.TEST.BATCH_SIZE_PER_GPU*len(cfg.GPUS),
+        batch_size=cfg.TEST.BATCH_SIZE_PER_GPU*active_devices,
         shuffle=False,
         num_workers=cfg.WORKERS,
-        pin_memory=cfg.PIN_MEMORY
+        pin_memory=cfg.PIN_MEMORY,
+        worker_init_fn=seed_worker,
+        generator=validation_generator,
     )      
+
+    processed_samples = len(train_dataset)
+    if cfg.TRAIN.DROP_LAST:
+        processed_samples = (
+            processed_samples // batch_plan.global_micro_batch
+        ) * batch_plan.global_micro_batch
+    final_optimizer_batch = processed_samples % batch_plan.effective_batch_size
+    if final_optimizer_batch == 0 and processed_samples > 0:
+        final_optimizer_batch = batch_plan.effective_batch_size
+    run_environment['dataset_sizes'] = {
+        'train': len(train_dataset),
+        'validation': len(valid_dataset),
+    }
+    run_environment['micro_batches_per_epoch'] = len(train_loader)
+    run_environment['training_samples_processed_per_epoch'] = processed_samples
+    run_environment['optimizer_steps_per_epoch'] = (
+        len(train_loader) + batch_plan.accumulation_steps - 1
+    ) // batch_plan.accumulation_steps
+    run_environment['final_optimizer_batch_size'] = final_optimizer_batch
+    atomic_write_json(os.path.join(base_dir, 'environment.json'), run_environment)
 
 
 
@@ -286,22 +522,38 @@ def main():
         except Exception as e:
             logger.error("Failed to load checkpoint '%s': %s", checkpoint_file, e)
             raise
+        validate_resume_protocol(
+            checkpoint, current_protocol_hash, strict=cfg.REPRODUCIBILITY.STRICT
+        )
         begin_epoch = checkpoint.get('epoch', 0)
         best_perf = checkpoint.get('perf', 0.0)
+        best_epoch = checkpoint.get('best_epoch')
+        best_name_values = checkpoint.get('best_name_values')
         last_epoch = checkpoint.get('epoch', begin_epoch)
         # load state dict if present
         if 'state_dict' in checkpoint:
-            _load_state_dict_with_report(model, checkpoint['state_dict'], logger, context=checkpoint_file)
+            _load_state_dict_with_report(
+                model,
+                checkpoint['state_dict'],
+                logger,
+                context=checkpoint_file,
+                strict=cfg.REPRODUCIBILITY.STRICT,
+            )
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError('Checkpoint is missing model state.')
 
         if 'optimizer' in checkpoint:
             try:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             except ValueError as e:
-                logger.warning(
-                    "Could not load optimizer state from '%s' (%s). "
-                    "Continuing with freshly initialized optimizer state.",
-                    checkpoint_file, e
-                )
+                if cfg.REPRODUCIBILITY.STRICT:
+                    raise RuntimeError(
+                        'Could not restore optimizer state reproducibly.'
+                    ) from e
+                logger.warning("Could not load optimizer state from '%s' (%s).",
+                               checkpoint_file, e)
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError('Checkpoint is missing optimizer state.')
         logger.info("=> loaded checkpoint '{}' (epoch {})".format(
             checkpoint_file, checkpoint['epoch']))
 
@@ -334,147 +586,211 @@ def main():
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             logger.info('=> restored lr_scheduler state from checkpoint')
         except Exception as e:
+            if cfg.REPRODUCIBILITY.STRICT:
+                raise RuntimeError(
+                    'Could not restore learning-rate scheduler state reproducibly.'
+                ) from e
             logger.warning(
                 'Could not restore lr_scheduler state from checkpoint (%s). '
                 'Scheduler will continue from last_epoch=%d.',
                 e, last_epoch
             )
+    elif resume_from_ckpt and cfg.REPRODUCIBILITY.STRICT:
+        raise RuntimeError('Checkpoint is missing learning-rate scheduler state.')
 
-    def _rewrite_train_logs(
-        logs_file, avg_train_time, avg_test_time, best_epoch_val, best_perf_val, best_values, epoch_line=None
-    ):
-        def _to_metric_map(values):
-            if values is None:
-                return {}
-            if hasattr(values, 'get'):
-                return values
-            if isinstance(values, list):
-                # common shape from some evaluators: [OrderedDict(...), ...]
-                for item in values:
-                    if hasattr(item, 'get') and 'Mean' in item:
-                        return item
-                for item in values:
-                    if hasattr(item, 'get'):
-                        return item
-                # fallback: list of tuples
-                try:
-                    return dict(values)
-                except Exception:
-                    return {}
-            return {}
-
-        try:
-            lines = []
-            if os.path.exists(logs_file):
-                with open(logs_file, 'r', encoding='utf-8') as f:
-                    lines = [ln.rstrip('\n') for ln in f.readlines()]
-
-            summary_idx = None
-            for i, line in enumerate(lines):
-                if line.strip() == '# Summary':
-                    summary_idx = i
-                    break
-            if summary_idx is not None:
-                lines = lines[:summary_idx]
-
-            header = 'epoch\thead\teyes\tmouth\tmean\ttrain_time_s\ttest_time_s'
-            if not lines or not lines[0].startswith('epoch\t'):
-                lines.insert(0, header)
-
-            if epoch_line:
-                lines.append(epoch_line.rstrip('\n'))
-
-            lines.append('')
-            lines.append('# Summary')
-            lines.append(f'Avg epoch train time (s): {float(avg_train_time):.4f}')
-            lines.append(f'Avg epoch test time (s): {float(avg_test_time):.4f}')
-
-            if best_epoch_val is not None:
-                lines.append(f'Best epoch: {best_epoch_val} (perf={float(best_perf_val):.6f})')
-                metrics = _to_metric_map(best_values)
-                lines.append(
-                    'Best epoch accuracies - Head: {0:.6f}, Eyes: {1:.6f}, Mouth: {2:.6f}, Mean: {3:.6f}'.format(
-                        float(metrics.get('Head', 0.0)),
-                        float(metrics.get('Eyes', 0.0)),
-                        float(metrics.get('Mouth', 0.0)),
-                        float(metrics.get('Mean', 0.0)),
-                    )
+    if resume_from_ckpt:
+        if 'rng_state' in checkpoint:
+            restore_rng_state(checkpoint['rng_state'], train_generator)
+            validation_state = checkpoint.get('validation_loader_generator_state')
+            if validation_state is not None:
+                validation_generator.set_state(validation_state)
+            elif cfg.REPRODUCIBILITY.STRICT:
+                raise RuntimeError(
+                    'Checkpoint has no validation DataLoader RNG state.'
                 )
-            else:
-                lines.append('Best epoch: N/A')
-
-            with open(logs_file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(lines).rstrip() + '\n')
-        except Exception as exc:
-            logger.warning('Failed to update train_logs summary: %s', exc)
+            logger.info('=> restored Python, NumPy, PyTorch, CUDA, and DataLoader RNG state')
+        elif cfg.REPRODUCIBILITY.STRICT:
+            raise RuntimeError(
+                'Checkpoint has no RNG state and cannot be resumed reproducibly. '
+                'Use a fresh run directory or disable strict mode for a legacy continuation.'
+            )
 
     # Prepare train logs file directly under LOG_DIR (base_dir)
     train_logs_file = os.path.join(base_dir, 'train_logs.txt')
-    _rewrite_train_logs(train_logs_file, 0.0, 0.0, best_epoch, best_perf, best_name_values)
+    _rewrite_train_logs(train_logs_file, best_epoch, best_perf, best_name_values)
 
-    epoch_train_times = []
-    epoch_test_times = []
+    history_file = os.path.join(base_dir, 'run_history.json')
+    try:
+        with open(history_file, 'r', encoding='utf-8') as handle:
+            run_history = json.load(handle)
+        if not isinstance(run_history, list):
+            raise ValueError('run_history.json must contain a JSON list')
+    except FileNotFoundError:
+        run_history = []
 
-    for epoch in range(begin_epoch, cfg.TRAIN.END_EPOCH):
+    attempt_index = len(run_history)
+    run_history.append({
+        'attempt': attempt_index + 1,
+        'started_at_utc': utc_timestamp(),
+        'status': 'running',
+        'command': shlex.join([sys.executable, *sys.argv]),
+        'config_file': os.path.abspath(args.cfg),
+        'checkpoint_file': os.path.abspath(checkpoint_file),
+        'resume_requested': bool(cfg.RESUME_FROM_CKPT),
+        'resumed': resume_from_ckpt,
+        'starting_epoch': int(begin_epoch),
+        'target_epochs': int(cfg.TRAIN.END_EPOCH),
+        'protocol_hash': current_protocol_hash,
+        'environment': run_environment,
+    })
+    atomic_write_json(history_file, run_history)
 
-        # train for one epoch (measure time)
-        t0 = time.time()
-        train_acc = train(cfg, train_loader, model, criterion, optimizer, epoch,
-                          debug_images_directory, None, None)
-        train_time = time.time() - t0
-        epoch_train_times.append(train_time)
+    training_state_file = os.path.join(base_dir, 'training_state.json')
+    stop_request_file = os.path.join(base_dir, 'stop_after_epoch.request')
 
-        lr_scheduler.step()
+    def _write_training_state(status, completed_epochs, validation_perf=None):
+        state = {
+            'status': status,
+            'updated_at_utc': utc_timestamp(),
+            'completed_epochs': int(completed_epochs),
+            'target_epochs': int(cfg.TRAIN.END_EPOCH),
+            'best_epoch_index': best_epoch,
+            'best_epoch_number': best_epoch + 1 if best_epoch is not None else None,
+            'best_validation_performance': float(best_perf),
+            'last_validation_performance': (
+                float(validation_perf) if validation_perf is not None else None
+            ),
+            'checkpoint_file': os.path.abspath(checkpoint_file),
+            'protocol_hash': current_protocol_hash,
+            'run_attempt': attempt_index + 1,
+        }
+        atomic_write_json(training_state_file, state)
 
-        # evaluate on validation set (measure time)
-        t1 = time.time()
-        name_values, perf_indicator = validate(
-            cfg, valid_loader, valid_dataset, model, criterion,
-            debug_images_directory, None, None, epoch)
-        test_time = time.time() - t1
-        epoch_test_times.append(test_time)
+    completed_epochs = int(begin_epoch)
+    stopped_early = False
+    _write_training_state('running', completed_epochs)
 
-        if perf_indicator >= best_perf:
-            best_perf = perf_indicator
-            best_model = True
-            best_epoch = epoch
-            best_name_values = name_values
-        else:
-            best_model = False
+    try:
+        for epoch in range(begin_epoch, cfg.TRAIN.END_EPOCH):
 
-        # Extract per-keypoint accuracies (Head, Eyes, Mouth, Mean)
-        try:
-            head_acc = float(name_values.get('Head', 0.0))
-            eyes_acc = float(name_values.get('Eyes', 0.0))
-            mouth_acc = float(name_values.get('Mouth', 0.0))
-            mean_acc = float(name_values.get('Mean', perf_indicator))
-        except Exception:
-            head_acc = eyes_acc = mouth_acc = mean_acc = float(perf_indicator)
+            # train for one epoch (measure time)
+            t0 = time.time()
+            train_acc = train(cfg, train_loader, model, criterion, optimizer, epoch,
+                              debug_images_directory, None, None,
+                              grad_accum_steps=batch_plan.accumulation_steps)
+            train_time = time.time() - t0
 
-        # Update logs after each epoch (append row, then update summary)
-        avg_train_time = sum(epoch_train_times) / len(epoch_train_times) if epoch_train_times else 0.0
-        avg_test_time = sum(epoch_test_times) / len(epoch_test_times) if epoch_test_times else 0.0
-        epoch_line = f"{epoch}\t{head_acc:.6f}\t{eyes_acc:.6f}\t{mouth_acc:.6f}\t{mean_acc:.6f}\t{train_time:.4f}\t{test_time:.4f}"
-        _rewrite_train_logs(train_logs_file, avg_train_time, avg_test_time, best_epoch, best_perf, best_name_values, epoch_line=epoch_line)
+            lr_scheduler.step()
 
-        logger.info('=> saving checkpoint to {}'.format(ckpt_dir))
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'model': cfg.MODEL.NAME,
-            'state_dict': model.state_dict(),
-            'best_state_dict': model.module.state_dict(),
-            'perf': perf_indicator,
-            'optimizer': optimizer.state_dict(),
-            'lr_scheduler': lr_scheduler.state_dict(),
-        }, best_model, ckpt_dir)
+            # evaluate on validation set (measure time)
+            t1 = time.time()
+            name_values, perf_indicator = validate(
+                cfg, valid_loader, valid_dataset, model, criterion,
+                debug_images_directory, None, None, epoch)
+            test_time = time.time() - t1
+
+            if perf_indicator >= best_perf:
+                best_perf = perf_indicator
+                best_model = True
+                best_epoch = epoch
+                best_name_values = name_values
+            else:
+                best_model = False
+
+            # Extract per-keypoint accuracies (Head, Eyes, Mouth, Mean)
+            try:
+                head_acc = float(name_values.get('Head', 0.0))
+                eyes_acc = float(name_values.get('Eyes', 0.0))
+                mouth_acc = float(name_values.get('Mouth', 0.0))
+                mean_acc = float(name_values.get('Mean', perf_indicator))
+            except Exception:
+                head_acc = eyes_acc = mouth_acc = mean_acc = float(perf_indicator)
+
+            # Upsert before checkpointing. If interrupted between these two
+            # operations, replaying the epoch replaces this row instead of
+            # duplicating it.
+            epoch_line = f"{epoch}\t{head_acc:.6f}\t{eyes_acc:.6f}\t{mouth_acc:.6f}\t{mean_acc:.6f}\t{train_time:.4f}\t{test_time:.4f}"
+            _rewrite_train_logs(
+                train_logs_file, best_epoch, best_perf, best_name_values,
+                epoch_line=epoch_line,
+            )
+
+            logger.info('=> atomically saving checkpoint to {}'.format(ckpt_dir))
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'model': cfg.MODEL.NAME,
+                'state_dict': model.state_dict(),
+                'best_state_dict': model.module.state_dict(),
+                'perf': best_perf,
+                'validation_perf': perf_indicator,
+                'best_epoch': best_epoch,
+                'best_name_values': best_name_values,
+                'optimizer': optimizer.state_dict(),
+                'lr_scheduler': lr_scheduler.state_dict(),
+                'rng_state': capture_rng_state(train_generator),
+                'validation_loader_generator_state': validation_generator.get_state(),
+                'training_protocol': current_protocol,
+                'training_protocol_hash': current_protocol_hash,
+                'resume_environment': current_resume_environment,
+            }, best_model, ckpt_dir)
+            completed_epochs = epoch + 1
+            _write_training_state('running', completed_epochs, perf_indicator)
+            _update_attempt(
+                history_file,
+                attempt_index,
+                last_completed_epoch=completed_epochs,
+                last_checkpoint_at_utc=utc_timestamp(),
+            )
+
+            if os.path.isfile(stop_request_file):
+                try:
+                    os.unlink(stop_request_file)
+                except FileNotFoundError:
+                    pass
+                stopped_early = completed_epochs < cfg.TRAIN.END_EPOCH
+                logger.info(
+                    '=> received safe-stop request after %d completed epoch(s)',
+                    completed_epochs,
+                )
+                break
+    except BaseException:
+        _write_training_state('interrupted', completed_epochs)
+        _update_attempt(
+            history_file,
+            attempt_index,
+            status='interrupted',
+            ended_at_utc=utc_timestamp(),
+            last_completed_epoch=completed_epochs,
+        )
+        raise
+
+    if stopped_early:
+        _write_training_state('paused', completed_epochs)
+        _update_attempt(
+            history_file,
+            attempt_index,
+            status='paused',
+            ended_at_utc=utc_timestamp(),
+            last_completed_epoch=completed_epochs,
+        )
+        logger.info(
+            '=> run paused safely; rerun the same config to resume at epoch %d',
+            completed_epochs + 1,
+        )
+        return
 
     final_model_state_file = os.path.join(ckpt_dir, 'final_model.pth')
-    logger.info('=> saving final model state to {}'.format(final_model_state_file))
-    torch.save(model.module.state_dict(), final_model_state_file)
-    # Final summary update (ensure latest stats are written)
-    avg_train_time = sum(epoch_train_times) / len(epoch_train_times) if epoch_train_times else 0.0
-    avg_test_time = sum(epoch_test_times) / len(epoch_test_times) if epoch_test_times else 0.0
-    _rewrite_train_logs(train_logs_file, avg_train_time, avg_test_time, best_epoch, best_perf, best_name_values)
+    logger.info('=> atomically saving final model state to {}'.format(final_model_state_file))
+    atomic_torch_save(model.module.state_dict(), final_model_state_file)
+    _rewrite_train_logs(train_logs_file, best_epoch, best_perf, best_name_values)
+    _write_training_state('completed', cfg.TRAIN.END_EPOCH)
+    _update_attempt(
+        history_file,
+        attempt_index,
+        status='completed',
+        ended_at_utc=utc_timestamp(),
+        last_completed_epoch=int(cfg.TRAIN.END_EPOCH),
+    )
     
 if __name__ == '__main__':
     main()

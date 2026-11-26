@@ -16,10 +16,21 @@ _C.RESUME_FROM_CKPT = False
 _C.PIN_MEMORY = True
 _C.RANK = 0
 
+# Reproducibility controls shared by every training configuration. A single
+# seed drives Python, NumPy, PyTorch, CUDA, and DataLoader worker randomness.
+_C.REPRODUCIBILITY = CN()
+_C.REPRODUCIBILITY.PROTOCOL = 'bird_hke_repro_v2'
+_C.REPRODUCIBILITY.SEED = 2026
+_C.REPRODUCIBILITY.STRICT = True
+_C.REPRODUCIBILITY.USE_DETERMINISTIC_ALGORITHMS = True
+_C.REPRODUCIBILITY.WARN_ONLY = False
+_C.REPRODUCIBILITY.ALLOW_TF32 = False
+_C.REPRODUCIBILITY.MATMUL_PRECISION = 'highest'
+
 # Cudnn related params
 _C.CUDNN = CN()
-_C.CUDNN.BENCHMARK = True
-_C.CUDNN.DETERMINISTIC = False
+_C.CUDNN.BENCHMARK = False
+_C.CUDNN.DETERMINISTIC = True
 _C.CUDNN.ENABLED = True
 
 # common params for NETWORK
@@ -46,10 +57,38 @@ _C.LOSS.FOCAL_BETA = 4.0
 _C.LOSS.FOCAL_WEIGHT = 1.0
 _C.LOSS.MSE_WEIGHT = 1.0
 
+# Optional, passive keypoint uncertainty modelling.  Enabling it adds detached
+# auxiliary outputs but does not change pose inputs, pose MSE, pose gradients,
+# or coordinate decoding.
+_C.UNCERTAINTY = CN()
+_C.UNCERTAINTY.ENABLED = False
+_C.UNCERTAINTY.DISTRIBUTION = 'softmax'  # 'softmax' or 'sparsemax'
+_C.UNCERTAINTY.TEMPERATURE = 1.0
+_C.UNCERTAINTY.HEAD_HIDDEN_CHANNELS = 128
+_C.UNCERTAINTY.JOINT_EMBED_DIM = 16
+_C.UNCERTAINTY.HEAD_DROPOUT = 0.0
+_C.UNCERTAINTY.RELIABILITY_GRADIENT_TO_BACKBONE = False
+
+# The quality output predicts whether the unchanged pose estimate is correct
+# under the same PCK threshold used by core.evaluate.accuracy.
+_C.UNCERTAINTY.QUALITY_PCK_THRESHOLD = 0.5
+_C.UNCERTAINTY.EVALUATION_SIMILARITY_SIGMA_FRACTION = 0.05
+_C.UNCERTAINTY.QUALITY_WEIGHT = 0.1
+_C.UNCERTAINTY.VISIBILITY_WEIGHT = 0.1
+_C.UNCERTAINTY.BALANCE_VISIBILITY_CLASSES = True
+
+# Inference and post-hoc calibration.  Pose coordinates always use the normal
+# heatmap decoder.  The reported keypoint confidence is the quality output;
+# visibility is returned separately and is never multiplied into confidence.
+_C.UNCERTAINTY.CALIBRATION_SET = 'calibration'
+_C.UNCERTAINTY.CALIBRATION_FILE = ''
+_C.UNCERTAINTY.CONFORMAL_COVERAGE = 0.90
+
 # DATASET related params
 _C.DATASET = CN()
 _C.DATASET.NAME_ = 'birdgaze.'  #'coco.' 'ak.'
 _C.DATASET.ROOT = ''
+_C.DATASET.ANNOT_DIR = 'annot'
 _C.DATASET.DATASET = ''
 _C.DATASET.TRAIN_SET = 'train'
 _C.DATASET.TEST_SET = 'valid'
@@ -65,7 +104,7 @@ _C.DATASET.PROB_HALF_BODY = 0.0
 _C.DATASET.NUM_JOINTS_HALF_BODY = 2
 _C.DATASET.COLOR_RGB = False
 
-def _build_phase_cfg():
+def _build_training_cfg():
     phase = CN()
 
     phase.LR_FACTOR = 0.1
@@ -82,7 +121,10 @@ def _build_phase_cfg():
     phase.WARMUP_EPOCHS = 0
     phase.MIN_LR = 0.0
     phase.CLIP_GRAD_NORM = 0.0
-    phase.GRAD_ACCUM_STEPS = 1
+    # A value of zero derives the accumulation count from
+    # EFFECTIVE_BATCH_SIZE / (BATCH_SIZE_PER_GPU * number of GPUs).
+    phase.GRAD_ACCUM_STEPS = 0
+    phase.EFFECTIVE_BATCH_SIZE = 64
 
     phase.BEGIN_EPOCH = 0
     phase.END_EPOCH = 140
@@ -93,21 +135,14 @@ def _build_phase_cfg():
     phase.CKPT_DIR = ''
     phase.LOG_DIR = ''
 
-    phase.BATCH_SIZE_PER_GPU = 32
+    phase.BATCH_SIZE_PER_GPU = 8
     phase.SHUFFLE = True
+    phase.DROP_LAST = False
     return phase
 
 
-# train / finetune
-_C.TRAIN = _build_phase_cfg()
-
-_C.FINETUNE = _build_phase_cfg()
-_C.FINETUNE.DATA_DIR = ''
-_C.FINETUNE.SOURCE_DIR = ''
-_C.FINETUNE.SOURCE_MODEL_FILE = ''
-_C.FINETUNE.CKPT_FILE = 'finetune_checkpoint.pth'
-_C.FINETUNE.BEST_MODEL_FILE = 'finetune_model_best.pth'
-_C.FINETUNE.FINAL_MODEL_FILE = 'finetune_final_model.pth'
+# training
+_C.TRAIN = _build_training_cfg()
 
 # testing
 _C.TEST = CN()
@@ -222,6 +257,3 @@ _C.DETECTION.MAX_INTERPOLATION_GAP = 2
 # Maximum number of frames at the start/end that may be filled by copying
 # the first/last real detection. Set to 0 to disable endpoint filling.
 _C.DETECTION.MAX_ENDPOINT_FILL = 2
-
-
-

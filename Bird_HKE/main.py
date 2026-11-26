@@ -3,8 +3,8 @@ Bird Pose Estimation Pipeline
 Main entry point for video processing with object detection and pose estimation.
 """
 
-import re
 import argparse
+import hashlib
 import json
 import cv2
 import numpy as np
@@ -13,7 +13,8 @@ from pathlib import Path
 
 from lib.config import cfg, update_config
 from models import get_pose_net
-from lib.utilities.utilities import get_model_summary
+from lib.utilities.model_complexity import profile_model_complexity
+from lib.utilities.model_complexity import write_model_complexity_json
 from tools.utils import read_video_frames
 from tools.utils import get_yolo_model
 from tools.bird_detector import BirdDetector
@@ -21,6 +22,7 @@ from tools.pose_estimator import PoseEstimator
 from tools.motion_analyzer import MotionAnalyzer
 from tools.visualizer import Visualizer
 from tools.metrics import evaluate_poses, evaluate_jitter_only
+from tools.metrics import evaluate_uncertainty_predictions
 
 
 # ── Legacy checkpoint compatibility ──────────────────────────────────
@@ -79,26 +81,33 @@ class BirdPoseEstimationPipeline:
                 print(f'  WARNING – missing keys:    {info.missing_keys}')
             if info.unexpected_keys:
                 print(f'  WARNING – unexpected keys:  {info.unexpected_keys}')
+            self._verify_uncertainty_calibration(cfg.TEST.POSE_MODEL_FILE)
         else:
             print('Warning: No pose model file specified in config')
         
-        # ── compute & save model stats (params + GFLOPs) ──
+        # Compute the same parameter/MAC/FLOP report used during training.
         try:
-            img_h, img_w = (cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE')
+            img_w, img_h = (cfg.MODEL.IMAGE_SIZE if hasattr(cfg.MODEL, 'IMAGE_SIZE')
                             else (256, 256))
             model.to(self.device)
             dummy = torch.zeros(1, 3, img_h, img_w).to(self.device)
-            summary_str = get_model_summary(model, dummy, verbose=False)
-            params_m = sum(p.numel() for p in model.parameters()) / 1e6
-            m = re.search(
-                r'Total Multiply Adds.*?:\s*([0-9,\.]+)\s*GFLOPs',
-                summary_str
-            )
-            gflops = float(m.group(1).replace(',', '')) if m else 0.0
+            complexity = profile_model_complexity(model, dummy)
             stats_path = self.results_dir / 'model_stats.json'
-            with open(stats_path, 'w') as _f:
-                json.dump({'params_M': round(params_m, 4), 'gflops': round(gflops, 4)}, _f, indent=2)
-            print(f'Model stats saved: {params_m:.2f}M params, {gflops:.4f} GFLOPs')
+            write_model_complexity_json(
+                stats_path,
+                complexity,
+                metadata={
+                    'model_name': str(cfg.MODEL.NAME),
+                    'uncertainty_enabled': bool(cfg.UNCERTAINTY.ENABLED),
+                    'checkpoint_file': str(cfg.TEST.POSE_MODEL_FILE),
+                },
+            )
+            print(
+                'Model stats saved: '
+                f'{complexity.trainable_parameters / 1e6:.6f}M trainable '
+                f'parameters, {complexity.gmacs:.6f} GMACs, '
+                f'{complexity.gflops:.6f} GFLOPs'
+            )
         except Exception as _e:
             print(f'Warning: could not compute model stats: {_e}')
 
@@ -107,6 +116,31 @@ class BirdPoseEstimationPipeline:
         model.eval()
         
         return model
+
+    @staticmethod
+    def _verify_uncertainty_calibration(checkpoint_path):
+        if not bool(cfg.UNCERTAINTY.ENABLED) or not cfg.UNCERTAINTY.CALIBRATION_FILE:
+            return
+        calibration_path = Path(cfg.UNCERTAINTY.CALIBRATION_FILE).expanduser()
+        if not calibration_path.is_file():
+            raise FileNotFoundError(
+                f'Uncertainty calibration file not found: {calibration_path}'
+            )
+        with calibration_path.open('r', encoding='utf-8') as handle:
+            calibration = json.load(handle)
+        expected = calibration.get('checkpoint_sha256')
+        if not expected:
+            raise RuntimeError(
+                'Calibration JSON has no checkpoint_sha256 and cannot be matched safely.'
+            )
+        digest = hashlib.sha256()
+        with open(checkpoint_path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            raise RuntimeError(
+                'The calibration JSON was fitted to a different model checkpoint.'
+            )
     
     def _load_ground_truth(self):
         """Load ground truth annotations if provided."""
@@ -154,6 +188,7 @@ class BirdPoseEstimationPipeline:
                 bboxes,
                 write_initial=self.args.write_pose
             )
+            self._save_uncertainty(results)
             
             # Step 3: Analysis and Visualization
             self._analyze_and_visualize(results, frames, fps, total_time)
@@ -169,6 +204,20 @@ class BirdPoseEstimationPipeline:
                 self._evaluate_jitter(results, fps)
         
         print(f"\nPipeline complete! Results saved to: {self.results_dir}")
+
+    def _save_uncertainty(self, results):
+        """Persist per-frame probabilistic diagnostics when UQ is enabled."""
+        values = results.get('uncertainties_initial', [])
+        if not any(value is not None for value in values):
+            return
+        records = [
+            {'frame_index': index, 'keypoints': value}
+            for index, value in enumerate(values)
+        ]
+        output_path = self.results_dir / 'uncertainty_initial.json'
+        with output_path.open('w', encoding='utf-8') as handle:
+            json.dump(records, handle, indent=2, allow_nan=False)
+        print(f'Uncertainty diagnostics saved to: {output_path}')
     
     def _analyze_and_visualize(self, results, frames, fps, total_time):
         """Analyze motion and create visualizations."""
@@ -200,6 +249,20 @@ class BirdPoseEstimationPipeline:
             pred_bboxes=bboxes
         )
 
+        uncertainty_values = results.get('uncertainties_initial', [])
+        uncertainty_metrics = None
+        if any(value is not None for value in uncertainty_values):
+            uncertainty_metrics = evaluate_uncertainty_predictions(
+                results['poses_initial'],
+                uncertainty_values,
+                self.gt_annotations,
+                self.results_dir,
+                pred_bboxes=bboxes,
+                similarity_sigma_fraction=(
+                    cfg.UNCERTAINTY.EVALUATION_SIMILARITY_SIGMA_FRACTION
+                ),
+            )
+
         print("\n=== Evaluation Metrics (Initial) ===")
         for key, value in metrics.get('initial', {}).items():
             print(f"{key}: {value:.4f}")
@@ -207,6 +270,11 @@ class BirdPoseEstimationPipeline:
         if has_final:
             print("\n=== Evaluation Metrics (Final) ===")
             for key, value in metrics.get('final', {}).items():
+                print(f"{key}: {value:.4f}")
+
+        if uncertainty_metrics is not None:
+            print("\n=== Uncertainty Calibration Metrics (Initial) ===")
+            for key, value in uncertainty_metrics.items():
                 print(f"{key}: {value:.4f}")
 
     def _evaluate_jitter(self, results, fps):
@@ -350,7 +418,6 @@ def parse_args():
     # Required by supporting codebase
     args.modelDir = ''
     args.logDir = ''
-    args.prevModelDir = ''
     
     return args
 

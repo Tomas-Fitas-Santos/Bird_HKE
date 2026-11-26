@@ -42,6 +42,7 @@ class JointsDataset(Dataset):
         else:
             self.output_path = cfg.OUTPUT_DIR if cfg.OUTPUT_DIR else os.path.join(os.getcwd(), 'output')
         self.data_format = cfg.DATASET.DATA_FORMAT
+        self.annotation_dir = cfg.DATASET.ANNOT_DIR
 
         self.scale_factor = cfg.DATASET.SCALE_FACTOR
         self.rotation_factor = cfg.DATASET.ROT_FACTOR
@@ -140,7 +141,13 @@ class JointsDataset(Dataset):
 
         joints = db_rec['joints_3d']
         joints_vis = db_rec['joints_3d_vis']
-
+        coordinate_valid = db_rec.get('joints_3d_valid', joints_vis).copy()
+        visibility_known = db_rec.get(
+            'visibility_known', np.ones((self.num_joints, 1), dtype=np.float32)
+        ).copy()
+        visibility_target = db_rec.get(
+            'visibility_target', joints_vis[:, :1]
+        ).copy()
         c = db_rec['center']
         s = db_rec['scale']
         score = db_rec['score'] if 'score' in db_rec else 1
@@ -168,10 +175,10 @@ class JointsDataset(Dataset):
                         c = c - np.array([x1, y1], dtype=c.dtype)
 
         if self.is_train:
-            if (np.sum(joints_vis[:, 0]) > self.num_joints_half_body
+            if (np.sum(coordinate_valid[:, 0]) > self.num_joints_half_body
                 and np.random.rand() < self.prob_half_body):
                 c_half_body, s_half_body = self.half_body_transform(
-                    joints, joints_vis
+                    joints, coordinate_valid
                 )
 
                 if c_half_body is not None and s_half_body is not None:
@@ -185,8 +192,11 @@ class JointsDataset(Dataset):
 
             if self.flip and random.random() <= 0.5:
                 data_numpy = data_numpy[:, ::-1, :]
-                joints, joints_vis = fliplr_joints(
-                    joints, joints_vis, data_numpy.shape[1], self.flip_pairs)
+                joints, coordinate_valid = fliplr_joints(
+                    joints, coordinate_valid, data_numpy.shape[1], self.flip_pairs)
+                self._swap_joint_rows(joints_vis)
+                self._swap_joint_rows(visibility_known)
+                self._swap_joint_rows(visibility_target)
                 c[0] = data_numpy.shape[1] - c[0] - 1
 
         trans = get_affine_transform(c, s, r, self.image_size)
@@ -198,14 +208,14 @@ class JointsDataset(Dataset):
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0))
 
+        for i in range(self.num_joints):
+            if coordinate_valid[i, 0] > 0.0:
+                joints[i, 0:2] = affine_transform(joints[i, 0:2], trans)
+
         if self.transform:
             input = self.transform(input)
 
-        for i in range(self.num_joints):
-            if joints_vis[i, 0] > 0.0:
-                joints[i, 0:2] = affine_transform(joints[i, 0:2], trans)
-
-        target, target_weight = self.generate_target(joints, joints_vis)
+        target, target_weight = self.generate_target(joints, coordinate_valid)
 
         target = torch.from_numpy(target)
         target_weight = torch.from_numpy(target_weight)
@@ -216,6 +226,10 @@ class JointsDataset(Dataset):
             'imgnum': imgnum,
             'joints': joints,
             'joints_vis': joints_vis,
+            'coordinate_valid': coordinate_valid[:, :1],
+            'visibility_known': visibility_known,
+            'visibility_target': visibility_target,
+            'source': db_rec.get('source', 'unknown'),
             'center': c,
             'scale': s,
             'rotation': r,
@@ -224,6 +238,10 @@ class JointsDataset(Dataset):
         }
 
         return input, target, target_weight, meta
+
+    def _swap_joint_rows(self, values):
+        for left, right in self.flip_pairs:
+            values[[left, right]] = values[[right, left]]
 
     def select_data(self, db):
         db_selected = []
@@ -258,14 +276,14 @@ class JointsDataset(Dataset):
         logger.info('=> num selected db: {}'.format(len(db_selected)))
         return db_selected
 
-    def generate_target(self, joints, joints_vis):
+    def generate_target(self, joints, coordinate_valid):
         '''
         :param joints:  [num_joints, 3]
-        :param joints_vis: [num_joints, 3]
-        :return: target, target_weight(1: visible, 0: invisible)
+        :param coordinate_valid: [num_joints, 3]
+        :return: target, target_weight(1: coordinate annotated, 0: absent)
         '''
         target_weight = np.ones((self.num_joints, 1), dtype=np.float32)
-        target_weight[:, 0] = joints_vis[:, 0]
+        target_weight[:, 0] = coordinate_valid[:, 0]
 
         assert self.target_type == 'gaussian', \
             'Only support gaussian map now!'
