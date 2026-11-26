@@ -198,6 +198,11 @@ larger models run on stronger or multi-GPU machines without changing the
 per-GPU BatchNorm batch or the effective optimizer batch. The effective batch
 must divide exactly; incompatible GPU counts fail before training begins.
 
+The optimizer and schedule above belong to the **native** `bird_hke_repro_v2`
+protocol and are unchanged. The external baselines in `comparison_models/`
+deliberately use each paper's own optimizer and schedule instead; see
+[`docs/PAPER_FAITHFUL_PROTOCOL.md`](docs/PAPER_FAITHFUL_PROTOCOL.md).
+
 Each run writes `resolved_config.yaml`, `environment.json`,
 `model_summary.txt`, and `model_complexity.json` to its log directory. The
 complexity JSON records the input shape, counting convention, operation

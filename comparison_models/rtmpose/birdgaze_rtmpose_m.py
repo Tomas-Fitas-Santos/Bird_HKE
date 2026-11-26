@@ -68,8 +68,22 @@ model = dict(
 load_from = None
 resume = False
 
-max_epochs = 100
-train_cfg = dict(max_epochs=100, val_interval=1)
+# --------------------------------------------------------------------------
+# Training method: the AP-10K recipe's optimizer, weight decay, gradient
+# clipping, parameter-wise decay exemptions, warmup, half-range cosine and
+# EMA, transposed onto the 100-epoch Bird_HKE budget. Only the epoch count
+# (210 -> 100) and the batch size (512 -> 64, see auto_scale_lr below) differ.
+# --------------------------------------------------------------------------
+base_lr = 4e-3
+weight_decay = 0.05
+total_epochs = 100
+# Upstream warms up for 1000 dataloader iterations and starts the cosine at
+# the halfway point of training (epoch 105 of 210).
+warmup_iters = 1000
+cosine_begin = total_epochs // 2
+
+max_epochs = total_epochs
+train_cfg = dict(max_epochs=total_epochs, val_interval=10)
 randomness = dict(seed=2026, deterministic=True)
 env_cfg = dict(cudnn_benchmark=False)
 train_batch_size = 8
@@ -79,19 +93,35 @@ optim_wrapper = dict(
     images_per_epoch=train_image_count,
     microbatch_size=8,
     accumulative_counts=8,
-    optimizer=dict(type="AdamW", lr=5e-4, weight_decay=0.01),
-    paramwise_cfg=None,
-    clip_grad=dict(max_norm=1.0, norm_type=2),
+    optimizer=dict(type="AdamW", lr=base_lr, weight_decay=weight_decay),
+    paramwise_cfg=dict(norm_decay_mult=0, bias_decay_mult=0,
+                       bypass_duplicate=True),
+    clip_grad=dict(max_norm=35, norm_type=2),
 )
 param_scheduler = [
-    dict(type="LinearLR", start_factor=0.1, by_epoch=True, begin=0, end=5),
-    dict(type="CosineAnnealingLR", by_epoch=True, begin=5, end=100, T_max=95, eta_min=1e-5),
+    dict(type="LinearLR", start_factor=1e-5, by_epoch=False, begin=0,
+         end=warmup_iters),
+    dict(type="CosineAnnealingLR", by_epoch=True, begin=cosine_begin,
+         end=total_epochs, T_max=cosine_begin, eta_min=base_lr * 0.05,
+         convert_to_iter_based=True),
 ]
-auto_scale_lr = dict(enable=False, base_batch_size=64)
+# The AP-10K recipe trains 64 images per GPU on 8 GPUs and opts into
+# MMEngine's linear scaling with base_batch_size=512. Bird_HKE fixes the
+# effective batch at 64, and MMEngine would derive 8 (the per-process
+# dataloader batch) rather than 64 here because the remaining 8x comes from
+# gradient accumulation inside BirdGazeEpochOptimWrapper. Scaling stays
+# disabled and base_lr above is the paper's value verbatim.
+auto_scale_lr = dict(enable=False, base_batch_size=512)
 
-# No second-stage pipeline switch or EMA, matching the single-stage Bird_HKE
-# protocol. Disable half-body and color augmentation used in RTMPose defaults.
-custom_hooks = [dict(type="BirdGazeRNGCheckpointHook")]
+# ExpMomentumEMA exactly as configured by the AP-10K recipe. The second
+# training stage (PipelineSwitchHook at epoch 180 of 210) is NOT used: the
+# Bird_HKE augmentation pipeline is shared by all three comparison models and
+# has no second stage to switch to.
+custom_hooks = [
+    dict(type="BirdGazeRNGCheckpointHook"),
+    dict(type="EMAHook", ema_type="ExpMomentumEMA", momentum=0.0002,
+         update_buffers=True, priority=49),
+]
 
 # Preserve orientation metadata for correct validation-time decoding.
 # Validation uses images only to select checkpoints; held-out annotated

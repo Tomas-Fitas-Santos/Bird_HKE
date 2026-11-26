@@ -17,20 +17,28 @@ what still has to be verified before any number is reported.
   `BirdGaze_v2/birdgaze_corrected_subset`.
 * Seed 2026 for every run. Random initialisation, no pretrained weights, no
   reuse of native checkpoints.
-* At most 100 epochs, AdamW lr `5e-4`, weight decay `0.01`, 5 warm-up epochs,
-  cosine decay to `1e-5`, gradient clipping 1.0, physical batch 8, effective
-  optimizer batch 64, 256x256 input, 64x64 heatmaps, Gaussian sigma 2.
-* RTMPose-M follows the upstream 210-epoch MMEngine schedule; it is therefore
-  reported as an architecture-faithful baseline rather than a
-  protocol-identical one, and only FD is validated in this phase.
+* At most 100 epochs, 256x256 input, 64x64 heatmaps, Gaussian sigma 2,
+  effective optimizer batch 64.
+* **Each baseline uses its own paper's optimizer and schedule**, not a shared
+  one: ViTPose-B uses AdamW `5e-4`/`0.1` with layer decay 0.75 and step decay at
+  epochs 81/95; PoseBH-B uses AdamW `1e-3`/`0.1` with layer decay 0.75 and step
+  decay at epochs 50/90; RTMPose-M uses AdamW `4e-3`/`0.05`, clip 35,
+  1000-iteration warmup, half-range cosine and `ExpMomentumEMA`. Epoch count is
+  the only exempted hyperparameter. See
+  [PAPER_FAITHFUL_PROTOCOL.md](./PAPER_FAITHFUL_PROTOCOL.md).
+* RTMPose-M's upstream AP-10K schedule is 210 epochs; its cosine range and
+  warmup are transposed onto the 100-epoch budget, so it is an
+  optimizer-faithful baseline whose epoch budget and augmentation pipeline are
+  Bird_HKE's. Only FD is validated in this phase.
 
 ## Protocol parity
 
 ViTPose-B and PoseBH-B execute the *same* code path for accumulation, AMP,
 clipping, checkpointing, resume and PCK validation
-(`comparison_models/common/training_utils.py`); only the architecture and loss
-differ. Both consume the identical augmentation stream for a given epoch and
-seed, so a difference in their curves is attributable to the model.
+(`comparison_models/common/training_utils.py`); only the architecture, loss and
+optimizer/schedule *values* differ. Both consume the identical augmentation
+stream for a given epoch and seed, so a difference in their curves is
+attributable to the model.
 
 ## Data rules
 
@@ -59,6 +67,7 @@ uncertainty must resample video sequences, not frames.
 |---|---|
 | Shared BirdGaze conversion + OS/CS source-crop fidelity | implemented, CPU-tested |
 | OS/CS identical-export guard | implemented (`preflight.validate_os_cs_distinction`) |
+| Per-model paper-faithful optimizer/schedule | implemented, CPU-tested ([details](./PAPER_FAITHFUL_PROTOCOL.md)) |
 | ViTPose-B trainer | implemented; CPU-tested; **GPU smoke UNVERIFIED** |
 | PoseBH-B trainer | implemented; CPU-tested; **GPU smoke UNVERIFIED** |
 | ViTPose/PoseBH 2-epoch train+resume probe | implemented; **UNVERIFIED** (needs GPU) |

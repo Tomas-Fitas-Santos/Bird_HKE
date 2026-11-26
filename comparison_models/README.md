@@ -58,6 +58,19 @@ is **not** a reproduction of the published multi-dataset PoseBH method and its
 cross-dataset CPS/CSS results, and must always be labelled
 `PoseBH-B (single-dataset adaptation)` in plots and reports.
 
+## Training fidelity
+
+Each model is trained with **its own paper's optimizer and schedule** — base
+learning rate, betas, weight decay, decay exemptions, layer-wise LR decay,
+gradient clipping, warmup, decay schedule, EMA and AMP loss scale are all taken
+verbatim from the pinned upstream config. The only exempted hyperparameter is
+the epoch count, which Bird_HKE fixes at 100 and rescales the schedules to.
+
+The three models still share the BirdGaze data contract, the augmentation
+stream, the effective batch of 64, seed 2026 and random initialization. The
+full per-model equivalence table and the list of deliberate deviations is in
+[docs/PAPER_FAITHFUL_PROTOCOL.md](../docs/PAPER_FAITHFUL_PROTOCOL.md).
+
 ## Unified CLI
 
 ```bash

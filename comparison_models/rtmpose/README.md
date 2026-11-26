@@ -28,9 +28,15 @@ until the actual Titan data/GPU preflight passes.
 - From scratch: no pretrained weights or externally initialized checkpoint.
 - Input: 256 × 256 RGB; only `BirdGaze_v2/BirdGaze_Full_Dataset/annot/train.json`
   is used for weight updates; `val.json` is for best-checkpoint selection.
-- Train for 100 epochs; seed 2026; AdamW 0.0005 and weight decay 0.01;
-  5-epoch linear warmup, cosine to 0.00001; norm clipping 1.0;
-  physical microbatch 8 and **effective optimizer batch 64** (one GPU).
+- Train for 100 epochs; seed 2026; AdamW `4e-3` and weight decay `0.05` with
+  `norm_decay_mult=0`, `bias_decay_mult=0`, `bypass_duplicate=True`;
+  `LinearLR` warmup from `1e-5` for 1000 iterations; half-range
+  `CosineAnnealingLR` (`eta_min=base_lr*0.05`, iter-based) from epoch 50;
+  norm clipping 35; `ExpMomentumEMA` hook (momentum `0.0002`,
+  `update_buffers=True`, `priority=49`); physical microbatch 8 and
+  **effective optimizer batch 64** (one GPU). All of these are the AP-10K
+  recipe's values; only the epoch count (210 → 100) and the batch are changed.
+  See [docs/PAPER_FAITHFUL_PROTOCOL.md](../../docs/PAPER_FAITHFUL_PROTOCOL.md).
 - Native coordinate supervision masking, original source crop offset,
   eye-swap under horizontal flip, clipped-normal scale/rotation augmentation,
   and BirdGaze's exceptional negative/zero-scale crop treatment.

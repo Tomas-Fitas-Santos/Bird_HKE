@@ -122,11 +122,69 @@ def make_epoch_loader(recipe, dataset, epoch, *, train):
     )
 
 
+def layer_decay_param_groups(model, base_lr, weight_decay, num_layers,
+                             layer_decay_rate):
+    """Parameter groups for the ViT layer-decay used by ViTPose and PoseBH.
+
+    Mirrors ``LayerDecayOptimizerConstructor`` from the ViTPose/PoseBH
+    repositories (``mmcv_custom/layer_decay_optimizer_constructor.py``),
+    re-expressed for this repository's parameter names -- those models wrap
+    the transformer in ``backbone.``, ours does not:
+
+    * ``pos_embed``/``patch_embed`` -> layer 0, ``blocks.N`` -> layer N+1,
+      anything else (heads, necks) -> the last layer;
+    * 1-D tensors, ``.bias`` tensors and ``pos_embed`` get weight decay 0;
+    * ``lr_scale = layer_decay_rate ** (num_layers - layer_id - 1)`` with
+      ``num_layers = depth + 2``.
+
+    Frozen parameters are skipped, so a freeze/unfreeze stage can be resumed
+    without changing the group layout.
+    """
+    depth_plus_two = int(num_layers) + 2
+    rate = float(layer_decay_rate)
+    groups = {}
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        parts = name.split(".")
+        if name.startswith("patch_embed") or name == "pos_embed":
+            layer_id = 0
+        elif parts[0] == "blocks" and len(parts) > 1 and parts[1].isdigit():
+            layer_id = int(parts[1]) + 1
+        else:
+            layer_id = depth_plus_two - 1
+        undecayed = (len(parameter.shape) == 1 or name.endswith(".bias")
+                     or "pos_embed" in name)
+        key = (layer_id, 0 if undecayed else 1)
+        if key not in groups:
+            scale = rate ** (depth_plus_two - layer_id - 1)
+            groups[key] = {
+                "params": [],
+                "param_names": [],
+                "weight_decay": 0.0 if undecayed else float(weight_decay),
+                "lr_scale": scale,
+                "lr": scale * float(base_lr),
+                "group_name": "layer_%d_%s"
+                              % (key[0], "no_decay" if undecayed else "decay"),
+            }
+        groups[key]["params"].append(parameter)
+        groups[key]["param_names"].append(name)
+    return [groups[key] for key in sorted(groups)]
+
+
 def make_optimizer(recipe, model):
+    schedule = recipe.get("schedule") or {}
+    if schedule.get("type") == "vit_layer_decay":
+        groups = layer_decay_param_groups(
+            model, recipe["lr"], recipe["weight_decay"],
+            schedule["num_layers"], schedule["layer_decay_rate"])
+        return torch.optim.AdamW(groups, lr=recipe["lr"],
+                                 weight_decay=recipe["weight_decay"],
+                                 betas=tuple(recipe.get("betas", (0.9, 0.999))))
     return torch.optim.AdamW(
         model.parameters(), lr=recipe["lr"],
         weight_decay=recipe["weight_decay"],
-        betas=(0.9, 0.999),
+        betas=tuple(recipe.get("betas", (0.9, 0.999))),
     )
 
 
@@ -137,6 +195,80 @@ def lr_multiplier(recipe, epoch):
         return 0.1 + 0.9 * epoch / max(1, warmup)
     progress = min(1., (epoch - warmup) / max(1, recipe["epochs"] - warmup))
     return min_factor + (1 - min_factor) * 0.5 * (1 + math.cos(math.pi * progress))
+
+
+class PaperScheduleLR(torch.optim.lr_scheduler.LRScheduler):
+    """Iteration-based linear warmup plus epoch-milestone step decay.
+
+    ViTPose and PoseBH both train with ``warmup='linear',
+    warmup_iters=500, warmup_ratio=0.001`` followed by ``policy='step'``
+    decay at epoch milestones (``step=[170, 200]`` of 210 epochs for ViTPose,
+    ``step=[50, 90]`` of 100 epochs for PoseBH). MMPose applies both per
+    optimizer iteration, so this scheduler is stepped once per optimizer
+    step and ``milestones_epochs`` are converted to iterations with
+    ``iters_per_epoch`` (optimizer steps per epoch).
+
+    ``lr_lambda`` remains available for the epoch-level cosine fallback used
+    by recipes without a ``schedule`` block.
+    """
+
+    steps_per_iteration = True
+
+    def __init__(self, optimizer, warmup_iters, warmup_ratio,
+                 milestones_epochs, iters_per_epoch, gamma=0.1,
+                 last_epoch=-1):
+        self.warmup_iters = int(warmup_iters)
+        self.warmup_ratio = float(warmup_ratio)
+        self.milestones_epochs = tuple(int(epoch) for epoch in milestones_epochs)
+        self.iters_per_epoch = max(1, int(iters_per_epoch))
+        self.gamma = float(gamma)
+        self.milestones_iters = tuple(
+            epoch * self.iters_per_epoch for epoch in self.milestones_epochs)
+        # LRScheduler steps once during __init__, so start one iteration
+        # early to make the first parameter update use iteration 0.
+        self.iterations = -1
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.warmup_iters and self.iterations < self.warmup_iters:
+            progress = self.iterations / self.warmup_iters
+            factor = self.warmup_ratio + (1.0 - self.warmup_ratio) * progress
+        else:
+            factor = self.gamma ** sum(
+                1 for milestone in self.milestones_iters
+                if self.iterations >= milestone)
+        return [base_lr * factor for base_lr in self.base_lrs]
+
+    def step(self):
+        self.iterations += 1
+        super().step()
+
+    def state_dict(self):
+        state = super().state_dict()
+        state.pop("optimizer", None)
+        return state
+
+
+def make_scheduler(recipe, optimizer, iters_per_epoch):
+    """Build the scheduler a recipe asks for.
+
+    Recipes with a ``schedule`` block get the paper's iteration-based
+    warmup + step decay; anything else keeps the epoch-level cosine used by
+    the smoke tests.
+    """
+    schedule = recipe.get("lr_schedule") or {}
+    if schedule.get("type") == "vit_step":
+        return PaperScheduleLR(
+            optimizer,
+            warmup_iters=schedule["warmup_iters"],
+            warmup_ratio=schedule["warmup_ratio"],
+            milestones_epochs=schedule["milestones_epochs"],
+            iters_per_epoch=iters_per_epoch,
+            gamma=schedule.get("gamma", 0.1),
+        )
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lr_lambda=lambda epoch: lr_multiplier(recipe, epoch))
+
 
 
 def rng_snapshot():
@@ -302,6 +434,20 @@ class SingleTaskTrainer:
     def lr_multiplier(self, epoch):
         return lr_multiplier(self.recipe, epoch)
 
+    def iters_per_epoch(self, dataset_size):
+        """Optimizer steps per epoch under effective-batch accumulation."""
+        return max(1, math.ceil(int(dataset_size) / int(self.recipe["effective_batch"])))
+
+    def make_scheduler(self, optimizer, dataset_size):
+        return make_scheduler(self.recipe, optimizer,
+                              self.iters_per_epoch(dataset_size))
+
+    def make_grad_scaler(self):
+        # PoseBH's config uses fp16=dict(loss_scale=dict(init_scale=16384.0)).
+        return torch.amp.GradScaler(
+            "cuda", enabled=True,
+            init_scale=float(self.recipe.get("grad_scaler_init_scale", 65536.0)))
+
     # -- protocol helpers exposed for the disposable integration probe -----
     # The probe must exercise the exact production implementations, so they
     # are reachable from the trainer object rather than re-imported by name.
@@ -318,7 +464,7 @@ class SingleTaskTrainer:
 
     # -- epochs ------------------------------------------------------------
     def training_epoch(self, model, optimizer, scaler, loader, dataset_size,
-                       epoch):
+                       epoch, scheduler=None):
         recipe = self.recipe
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -352,6 +498,11 @@ class SingleTaskTrainer:
                 optimizer.zero_grad(set_to_none=True)
                 group_seen = 0
                 group_size = min(recipe["effective_batch"], dataset_size - count)
+                # The papers' warmup/step schedule is iteration based, so it
+                # advances once per optimizer step. Epoch-level schedulers are
+                # still advanced once per epoch by ``save_epoch``.
+                if getattr(scheduler, "steps_per_iteration", False):
+                    scheduler.step()
             if step % 100 == 0:
                 print(f"{self.name} epoch {epoch + 1}: {count}/{dataset_size} "
                       f"images, loss={running_loss / count:.8f}", flush=True)
@@ -417,6 +568,8 @@ class SingleTaskTrainer:
         record = {
             "epoch": epoch + 1,
             "lr": float(optimizer.param_groups[0]["lr"]),
+            "base_lr": float(self.recipe["lr"]),
+            "lr_group_count": len(optimizer.param_groups),
             **stats, **validation,
             "best_val_pck_005": best,
             "peak_cuda_memory_mib": round(
@@ -427,7 +580,8 @@ class SingleTaskTrainer:
                          else "best_slot_a.pth")
             save_atomic(model.state_dict(), run_dir / best_slot)
             best_digest = sha256(run_dir / best_slot)
-        scheduler.step()
+        if not getattr(scheduler, "steps_per_iteration", False):
+            scheduler.step()
         save_atomic({
             "epoch": epoch + 1,
             "model": model.state_dict(),
@@ -481,9 +635,9 @@ class SingleTaskTrainer:
             self.set_determinism()
             model = self.new_model().cuda()
             optimizer = self.make_optimizer(model)
-            scheduler = torch.optim.lr_scheduler.LambdaLR(
-                optimizer, lr_lambda=self.lr_multiplier)
-            scaler = torch.amp.GradScaler("cuda", enabled=True)
+            scheduler = self.make_scheduler(
+                optimizer, len(train_data))
+            scaler = self.make_grad_scaler()
             begin_epoch, best, best_slot, best_digest = 0, -float("inf"), None, None
             if mode == "resume":
                 state = self.load_epoch(model, optimizer, scheduler, scaler,
@@ -504,7 +658,8 @@ class SingleTaskTrainer:
             for epoch in range(begin_epoch, int(self.recipe["epochs"])):
                 loader = self.make_epoch_loader(train_data, epoch, train=True)
                 stats = self.training_epoch(
-                    model, optimizer, scaler, loader, len(train_data), epoch)
+                    model, optimizer, scaler, loader, len(train_data), epoch,
+                    scheduler=scheduler)
                 validation = self.validation_epoch(model, valid_data, epoch)
                 best, best_slot, best_digest, metrics = self.save_epoch(
                     model, optimizer, scheduler, scaler, run_dir, manifest,

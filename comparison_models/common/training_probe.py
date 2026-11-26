@@ -101,7 +101,8 @@ def checkpoint_epoch(train, model, optimizer, scheduler, scaler, root, manifest,
                      else "best_slot_a.pth")
         train.save_atomic(model.state_dict(), root / best_slot)
         best_digest = sha256(root / best_slot)
-    scheduler.step()
+    if not getattr(scheduler, "steps_per_iteration", False):
+        scheduler.step()
     snapshot = {
         "epoch": epoch + 1,
         "model": model.state_dict(),
@@ -163,15 +164,15 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
         temp_path = Path(temporary)
         model = instantiate(model_name, model_module).cuda()
         optimizer = trainer.make_optimizer(model)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer, lr_lambda=lambda epoch: trainer.lr_multiplier(epoch))
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
+        scheduler = trainer.make_scheduler(optimizer, len(train_set))
+        scaler = trainer.make_grad_scaler()
         trainer.set_determinism()
         peak = []
         # Epoch 1: actually train, validate, persist real optimizer state.
         train_loader = trainer.make_epoch_loader(train_set, epoch=0, train=True)
         stats1 = trainer.training_epoch(
-            model, optimizer, scaler, train_loader, len(train_set), 0)
+            model, optimizer, scaler, train_loader, len(train_set), 0,
+            scheduler=scheduler)
         if not optimizer.state:
             raise RuntimeError("No AdamW optimizer update/state was produced")
         val1 = trainer.validation_epoch(model, val_set, 0)
@@ -198,9 +199,8 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
             raise RuntimeError("Resumed checkpoint has incorrect epoch")
         model = instantiate(model_name, model_module).cuda()
         optimizer = trainer.make_optimizer(model)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer, lr_lambda=lambda epoch: trainer.lr_multiplier(epoch))
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
+        scheduler = trainer.make_scheduler(optimizer, len(train_set))
+        scaler = trainer.make_grad_scaler()
         model.load_state_dict(state["model"], strict=True)
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
@@ -219,7 +219,8 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
         # Epoch 2: actually take more optimizer steps after the checkpoint.
         train_loader = trainer.make_epoch_loader(train_set, epoch=1, train=True)
         stats2 = trainer.training_epoch(
-            model, optimizer, scaler, train_loader, len(train_set), 1)
+            model, optimizer, scaler, train_loader, len(train_set), 1,
+            scheduler=scheduler)
         val2 = trainer.validation_epoch(model, val_set, 1)
         best, slot, digest = checkpoint_epoch(
             trainer, model, optimizer, scheduler, scaler, temp_path,

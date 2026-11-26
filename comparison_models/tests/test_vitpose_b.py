@@ -163,10 +163,32 @@ class BirdGazeDatasetTests(unittest.TestCase):
 @unittest.skipUnless(HAS_DEPS, "Requires torch, OpenCV, NumPy")
 class ViTPoseProtocolTests(unittest.TestCase):
     def test_lr_schedule(self):
-        schedule = ViTPoseBTrainer().lr_multiplier
-        self.assertAlmostEqual(schedule(0), 0.1)
-        self.assertAlmostEqual(schedule(5), 1.)
-        self.assertAlmostEqual(schedule(100), 0.02)
+        from comparison_models.vitpose.recipe import RECIPE
+        from comparison_models.common.training_utils import make_scheduler
+        import torch as _torch
+        optimizer = _torch.optim.SGD(
+            [_torch.nn.Parameter(torch.zeros(1))], lr=RECIPE["lr"])
+        iters_per_epoch = 100
+        scheduler = make_scheduler(RECIPE, optimizer,
+                                   iters_per_epoch=iters_per_epoch)
+        optimizer.step()
+        # Paper schedule: 500-iteration linear warmup from ratio 1e-3, then
+        # step decay at epochs 81 and 95 of the 100-epoch budget.
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.001)
+        for _ in range(500):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], RECIPE["lr"])
+        for _ in range(81 * iters_per_epoch - 501):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], RECIPE["lr"])
+        scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.1)
+        for _ in range((95 - 81) * iters_per_epoch):
+            scheduler.step()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
+                               RECIPE["lr"] * 0.01)
 
     def test_gpu_busy_guard(self):
         from subprocess import CompletedProcess

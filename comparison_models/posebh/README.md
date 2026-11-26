@@ -154,9 +154,16 @@ Use `--scenario OS` and `--scenario CS` for their independent new
 directories, when those exports pass the OS/CS crop-collision guard.
 
 Training is capped at 100 epochs with seed 2026, 256×256 inputs,
-microbatch 2, gradient-accumulated batch 64, AdamW lr=0.0005, warmup/cosine
-decay, AMP and gradient clipping. Image validation selects the best *prototype*
-heatmap checkpoint, never the independent held-out annotated video data.
+microbatch 2, gradient-accumulated batch 64. The optimizer and schedule are
+PoseBH's own: AdamW `lr=1e-3, betas=(0.9, 0.999), weight_decay=0.1` with
+layer-wise LR decay (`num_layers=12`, `layer_decay_rate=0.75`), 500-iteration
+linear warmup from ratio `1e-3`, step decay at epochs 50 and 90, gradient
+clipping at norm 1.0 and FP16 AMP with `init_scale=16384`. See
+[docs/PAPER_FAITHFUL_PROTOCOL.md](../../docs/PAPER_FAITHFUL_PROTOCOL.md) for
+the full equivalence table and the upstream freeze/CPS/CSS hooks that the
+single-dataset adaptation does not use. Image validation selects the best
+*prototype* heatmap checkpoint, never the independent held-out annotated video
+data.
 
 ## Current qualification status
 
