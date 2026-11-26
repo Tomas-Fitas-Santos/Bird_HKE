@@ -35,14 +35,17 @@ A unit test checks both forward output and backward gradient parity against
 - Use a separate Python venv named `vitpose`; inherit existing Torch CUDA
   wheels in **read-only** system site-packages. No installation into the
   original Bird_HKE environment. No MMCV, MMPose or new CUDA downloads.
-- The launcher refuses to run when `nvidia-smi` reports a compute PID **on the
-  GPU assigned to it** (`CUDA_VISIBLE_DEVICES`), so a colleague using another
-  card on the same host does not block the run. That is a pre-start check;
-  **coordinate cluster GPU scheduling as well**, since new jobs may start after
-  the check. On hosts where `nvidia-smi` is unavailable (some login nodes ship
-  the driver without the monitoring utility) the check fails closed; set
-  `BIRD_HKE_SKIP_IDLE_GPU_CHECK=1` to proceed there, which records that you
-  accepted responsibility for coordinating GPU sharing manually.
+- The launcher checks that the GPU assigned to it has enough **free memory**
+  (at least 4 GiB by default) before allocating anything. Other processes
+  sharing that card are reported but allowed: both ViTPose-B and PoseBH-B peak
+  at roughly 2 GiB, so several runs can share one GPU, and determinism comes
+  from the per-process RNG and fixed batch order rather than exclusive access.
+  A colleague using a *different* card never blocks the run. This is a
+  pre-start check, not a scheduler — **plan co-tenancy deliberately**, since a
+  job starting later can still consume the memory. Override the floor with
+  `BIRD_HKE_GPU_MIN_FREE_MIB`, or skip the check entirely with
+  `BIRD_HKE_SKIP_GPU_CAPACITY_CHECK=1` on hosts where `nvidia-smi` is
+  unavailable (some login nodes ship the driver without the monitoring tool).
 - It checks a pinned clean upstream ViTPose checkout and compares the
   official *single-task* backbone config, never fetching pretrained weights.
 - It fingerprints the source and converted FD/OS/CS annotations, upstream
@@ -123,7 +126,8 @@ $VIT_PY -m unittest discover -s comparison_models/tests -t . -p 'test_remaining_
 $VIT_PY -m unittest discover -s comparison_models/tests -t . -p 'test_vitpose_b.py' -v
 ```
 
-With the target GPU idle, launch the actual disposable forward/backward test:
+With enough free memory on the target GPU, launch the actual disposable
+forward/backward test:
 
 ```bash
 $VIT_PY -m comparison_models.vitpose.train --scenario FD --smoke-test

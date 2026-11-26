@@ -38,7 +38,7 @@ from comparison_models.common.preflight import (
     ROOT, SCENARIOS, prepare, reserve, sha256,
 )
 from comparison_models.common.training_utils import (
-    SingleTaskTrainer, require_idle_gpu, runtime_fingerprint,
+    SingleTaskTrainer, require_gpu_capacity, runtime_fingerprint,
 )
 from comparison_models.vitpose.model import ViTPoseB
 from comparison_models.vitpose.recipe import RECIPE
@@ -165,9 +165,9 @@ def gpu_smoke(dataset, validation_dataset):
 def run(scenario, mode):
     trainer = ViTPoseBTrainer()
     trainer.ensure_isolated_runtime()
-    # Check before any CUDA model allocation. Prevent accidentally competing
-    # with already-active native training, RTMPose, or other GPU jobs.
-    require_idle_gpu()
+    # Check before any CUDA model allocation. Sharing a card with other runs is
+    # fine; running out of memory is not, so this checks free memory only.
+    require_gpu_capacity()
     trainer.set_determinism()
     run_dir, manifest = manifest_for(scenario)
     train_data = BirdGazeCropDataset(Path(manifest["dataset_root"]), "train")

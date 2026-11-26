@@ -61,89 +61,143 @@ def ensure_isolated_runtime(marker: str, documentation: str):
             "Require exactly one visible CUDA GPU (set CUDA_VISIBLE_DEVICES)")
 
 
-#: Opt-out for machines with no scheduler where the guard cannot be trusted,
-#: e.g. a login node whose nvidia-smi is missing or reports other GPUs.
-IDLE_GUARD_SKIP = "BIRD_HKE_SKIP_IDLE_GPU_CHECK"
+#: Opt-out for hosts whose nvidia-smi is missing or unreliable (some login
+#: nodes ship the driver without the monitoring utility).
+CAPACITY_GUARD_SKIP = "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK"
+
+#: Override for the free-memory floor, in MiB.
+CAPACITY_GUARD_FLOOR = "BIRD_HKE_GPU_MIN_FREE_MIB"
+
+#: Free memory a single comparison run needs before it starts. ViTPose-B and
+#: PoseBH-B peak at ~2.2 GiB allocated at their fixed microbatch, and the
+#: CUDA context, cuDNN workspaces and the fp16 gradient scaler add roughly
+#: another GiB. Two runs therefore share a 12 GiB card comfortably.
+DEFAULT_MIN_FREE_MIB = 4096
 
 
-def _visible_device_uuids():
-    """UUIDs of the CUDA devices this process is allowed to use.
-
-    ``CUDA_VISIBLE_DEVICES`` restricts torch, but ``nvidia-smi`` still reports
-    every GPU on the host, so the idle check must be filtered to the assigned
-    device(s) rather than the whole machine.
-    """
-    try:
-        response = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, check=True, text=True, timeout=15)
-    except (FileNotFoundError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired):
-        return None
-    by_index = {}
-    for line in response.stdout.splitlines():
-        parts = [value.strip() for value in line.split(",")]
-        if len(parts) == 2 and parts[0].isdigit():
-            by_index[parts[0]] = parts[1]
+def _visible_device_indices():
+    """Host GPU indices this process may use, or None when unrestricted."""
     requested = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if not requested or not by_index:
-        return set(by_index.values()) or None
+    if not requested:
+        return None
     wanted = set()
     for item in requested.split(","):
         item = item.strip()
-        if item in by_index:
-            wanted.add(by_index[item])
-    return wanted or set(by_index.values())
+        if item.isdigit():
+            wanted.add(item)
+    return wanted or None
 
 
-def _compute_apps():
-    """Return (uuid, pid) pairs for every running GPU compute process."""
+def _query_gpu_state():
+    """Return (rows, shared_pids) for the visible GPUs.
+
+    ``rows`` is a list of ``(index, free_mib, total_mib)`` limited to the
+    devices selected by ``CUDA_VISIBLE_DEVICES``; ``shared_pids`` counts other
+    compute processes already resident on those same devices. Sharing a card is
+    allowed, so the count is informational rather than a reason to refuse.
+    """
     response = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
+        ["nvidia-smi", "--query-gpu=index,memory.free,memory.total",
          "--format=csv,noheader,nounits"],
         capture_output=True, check=True, text=True, timeout=15)
-    pairs = []
+    wanted = _visible_device_indices()
+    rows = []
     for line in response.stdout.splitlines():
         parts = [value.strip() for value in line.split(",")]
-        if len(parts) == 2 and parts[1].isdigit():
-            pairs.append((parts[0], parts[1]))
-    return pairs
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue
+        if wanted is None or parts[0] in wanted:
+            rows.append((parts[0], float(parts[1]), float(parts[2])))
+    if not rows:
+        raise RuntimeError(
+            f"nvidia-smi reports no GPU matching CUDA_VISIBLE_DEVICES="
+            f"{os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')!r}")
+
+    # Map the selected host indices to UUIDs so co-resident processes can be
+    # attributed to this run's card(s) only.
+    shared = 0
+    try:
+        uuids = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, check=True, text=True, timeout=15)
+        selected = {line.split(",")[0].strip(): line.split(",")[1].strip()
+                    for line in uuids.stdout.splitlines()
+                    if len(line.split(",")) == 2}
+        chosen = {selected[index] for index, _, _ in rows if index in selected}
+        apps = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, check=True, text=True, timeout=15)
+        shared = len({pid for line in apps.stdout.splitlines()
+                      for pid in [line.split(",")[-1].strip()]
+                      if len(line.split(",")) == 2 and pid.isdigit()
+                      and line.split(",")[0].strip() in chosen
+                      and int(pid) != os.getpid()})
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            IndexError):
+        shared = 0
+    return rows, shared
 
 
-def require_idle_gpu():
-    """Fail closed before allocating model CUDA memory if the GPU is busy.
+def require_gpu_capacity(min_free_mib: float | None = None):
+    """Refuse to start unless the assigned GPU has enough free memory.
+
+    The protocol needs an *isolated environment* and a *fixed* seed, neither of
+    which is affected by another process sharing the card: each run gets its
+    own CUDA context, and determinism comes from the per-process RNG plus the
+    fixed batch order. The one thing co-tenancy can break is the run itself, by
+    exhausting memory, so that is what is checked here.
 
     Only the device(s) selected by ``CUDA_VISIBLE_DEVICES`` are considered, so
-    a colleague working on another card of the same host does not block this
-    run. This is a startup check, not a scheduler: it cannot stop another job
-    from starting afterwards, so scheduling still needs human coordination.
+    a colleague on another card of the same host never blocks this run. Other
+    processes sharing the selected card are reported but permitted.
 
-    On hosts where ``nvidia-smi`` is unavailable (some login nodes ship the
-    driver without the monitoring utility) the check cannot be performed. It
-    then fails closed unless ``BIRD_HKE_SKIP_IDLE_GPU_CHECK=1`` is set, which
-    records that the operator accepted responsibility for coordination.
+    This is a startup check, not a scheduler: a job starting later can still
+    consume the memory, so plan the co-tenancy deliberately.
     """
-    if os.environ.get(IDLE_GUARD_SKIP) == "1":
-        print("Idle-GPU check skipped via "
-              f"{IDLE_GUARD_SKIP}=1; coordinate GPU sharing manually.",
+    if os.environ.get(CAPACITY_GUARD_SKIP) == "1":
+        print(f"GPU capacity check skipped via {CAPACITY_GUARD_SKIP}=1.",
               flush=True)
         return
+    required = float(os.environ.get(CAPACITY_GUARD_FLOOR)
+                     or (min_free_mib or DEFAULT_MIN_FREE_MIB))
     try:
-        pairs = _compute_apps()
+        rows, shared = _query_gpu_state()
     except (FileNotFoundError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired) as exc:
+            subprocess.TimeoutExpired):
+        # Some GPU hosts ship the driver without the nvidia-smi utility. torch
+        # can still report free memory, and it already honours
+        # CUDA_VISIBLE_DEVICES, so use it instead of refusing to start.
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+        except Exception as exc:
+            raise RuntimeError(
+                "Cannot read GPU memory state (no nvidia-smi and no usable "
+                "CUDA context); refusing to start. Set "
+                f"{CAPACITY_GUARD_SKIP}=1 to override.") from exc
+        free, total = free_bytes / 2 ** 20, total_bytes / 2 ** 20
+        if free < required:
+            raise RuntimeError(
+                f"The assigned GPU has only {free:.0f} MiB free of "
+                f"{total:.0f} MiB; this run needs at least "
+                f"{required:.0f} MiB.")
+        print(f"GPU (via torch): {free:.0f}/{total:.0f} MiB free "
+              f"(>= {required:.0f} MiB required); nvidia-smi unavailable",
+              flush=True)
+        return
+    index, free, total = min(rows, key=lambda row: row[1])
+    if free < required:
         raise RuntimeError(
-            "Cannot verify GPU is idle with nvidia-smi; refusing. Set "
-            f"{IDLE_GUARD_SKIP}=1 to override on a host where nvidia-smi is "
-            "unavailable and GPU sharing is coordinated manually.") from exc
-    visible = _visible_device_uuids()
-    busy = sorted({pid for uuid, pid in pairs
-                   if visible is None or uuid in visible})
-    if busy:
-        raise RuntimeError(
-            "Another GPU compute process is running on the assigned GPU "
-            "(PIDs: " + ", ".join(busy) + "); refusing to interfere with it")
+            f"GPU {index} has only {free:.0f} MiB free of {total:.0f} MiB; "
+            f"this run needs at least {required:.0f} MiB. Free the card, "
+            f"raise {CAPACITY_GUARD_FLOOR}, or set "
+            f"{CAPACITY_GUARD_SKIP}=1 if you have verified the memory.")
+    print(f"GPU {index}: {free:.0f}/{total:.0f} MiB free "
+          f"(>= {required:.0f} MiB required)"
+          + (f", sharing with {shared} other compute process(es)" if shared
+             else ", exclusive"), flush=True)
+
 
 
 def set_determinism(seed: int):
@@ -521,8 +575,8 @@ class SingleTaskTrainer:
     restore_rng = staticmethod(restore_rng)
     sha256 = staticmethod(sha256)
 
-    def require_idle_gpu(self):
-        require_idle_gpu()
+    def require_gpu_capacity(self):
+        require_gpu_capacity()
 
     # -- epochs ------------------------------------------------------------
     def training_epoch(self, model, optimizer, scaler, loader, dataset_size,

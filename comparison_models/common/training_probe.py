@@ -139,7 +139,7 @@ def run_probe(model_name, scenario, train_examples=12, val_examples=8):
     # protocol helper below is the exact one used by a definitive run.
     trainer = train.get_trainer()
     trainer.ensure_isolated_runtime()
-    trainer.require_idle_gpu()
+    trainer.require_gpu_capacity()
     trainer.set_determinism()
     _, manifest = train.manifest_for(scenario)
     data_root = Path(manifest["dataset_root"])

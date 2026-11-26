@@ -1,5 +1,6 @@
 """CPU-only PoseBH-B BirdGaze adaptation tests; no training/checkpoint writes."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ try:
     from comparison_models.posebh.recipe import RECIPE
     from comparison_models.posebh.train import PoseBHTrainer
     from comparison_models.common.training_utils import (
-        require_idle_gpu, recover_history, refresh_best_alias)
+        require_gpu_capacity, recover_history, refresh_best_alias)
     from comparison_models.common.preflight import sha256
     HAS_DEPS = True
 except ImportError:
@@ -215,10 +216,12 @@ class PoseBHProtocolTests(unittest.TestCase):
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
                    return_value=CompletedProcess([], 0,
-                                                 stdout="GPU-abc, 991\n",
-                                                 stderr="")):
-            with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
-                require_idle_gpu()
+                                                 stdout="0, 512, 12288\n",
+                                                 stderr="")), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            with self.assertRaisesRegex(RuntimeError, "has only 512 MiB free"):
+                require_gpu_capacity()
 
     def test_best_and_history_recovery(self):
         with tempfile.TemporaryDirectory() as d:

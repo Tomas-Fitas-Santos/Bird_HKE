@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CPU regressions and real-data GPU smoke checks for the comparison models,
 # run SEQUENTIALLY. No training and no checkpoints are created; each model
-# still re-checks GPU idleness inside its own trainer.
+# still re-checks free GPU memory inside its own trainer.
 #
 # Usage (from the repository root):
 #   bash comparison_models/scripts/smoke_comparison_models.sh FD|OS|CS [model]

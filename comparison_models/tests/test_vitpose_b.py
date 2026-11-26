@@ -20,7 +20,7 @@ try:
     from comparison_models.vitpose.train import ViTPoseBTrainer
     from comparison_models.common.losses import masked_heatmap_mse
     from comparison_models.common.training_utils import (
-        require_idle_gpu, refresh_best_alias, recover_history,
+        require_gpu_capacity, refresh_best_alias, recover_history,
     )
     from comparison_models.common.preflight import sha256
     HAS_DEPS = True
@@ -191,53 +191,105 @@ class ViTPoseProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"],
                                RECIPE["lr"] * 0.01)
 
-    def test_gpu_busy_guard(self):
+    def test_gpu_capacity_guard_refuses_low_free_memory(self):
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
                    return_value=CompletedProcess([], 0,
-                                                 stdout="GPU-abc, 284\n",
-                                                 stderr="")):
-            with self.assertRaisesRegex(RuntimeError, "Another GPU compute process"):
-                require_idle_gpu()
+                                                 stdout="1, 1024, 12288\n",
+                                                 stderr="")), \
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1",
+                                        "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            with self.assertRaisesRegex(RuntimeError, "has only 1024 MiB free"):
+                require_gpu_capacity()
 
-    def test_gpu_busy_guard_ignores_other_visible_gpus(self):
+    def test_gpu_capacity_guard_allows_sharing_the_same_gpu(self):
+        """A co-resident process must NOT block the run if memory is free.
+
+        Both comparison models peak near 2 GiB, so several runs can share one
+        card; determinism comes from the per-process RNG and fixed batch order,
+        not from exclusive access.
+        """
         from subprocess import CompletedProcess
-        calls = []
 
         def fake_run(cmd, **_kwargs):
-            calls.append(cmd)
-            if any("index,uuid" in part for part in cmd):
-                return CompletedProcess([], 0,
-                                        stdout="0, GPU-aaa\n1, GPU-bbb\n",
+            if any("memory.free" in part for part in cmd):
+                return CompletedProcess([], 0, stdout="1, 40000, 79253\n",
                                         stderr="")
+            if any("index,uuid" in part for part in cmd):
+                return CompletedProcess([], 0, stdout="1, GPU-bbb\n", stderr="")
             return CompletedProcess([], 0, stdout="GPU-bbb, 284\n", stderr="")
 
         with patch("comparison_models.common.training_utils.subprocess.run",
                    side_effect=fake_run), \
-                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0",
-                                        "BIRD_HKE_SKIP_IDLE_GPU_CHECK": ""}):
-            require_idle_gpu()
-        self.assertTrue(any(any("index,uuid" in part for part in cmd)
-                            for cmd in calls))
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1",
+                                        "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
 
-    def test_gpu_busy_guard_can_be_overridden(self):
+    def test_gpu_capacity_guard_ignores_other_gpus(self):
+        """A busy colleague GPU must not block a free assigned GPU."""
+        from subprocess import CompletedProcess
+
+        def fake_run(cmd, **_kwargs):
+            if any("memory.free" in part for part in cmd):
+                return CompletedProcess([], 0,
+                                        stdout="0, 512, 94000\n1, 78000, 79253\n",
+                                        stderr="")
+            if any("index,uuid" in part for part in cmd):
+                return CompletedProcess([], 0,
+                                        stdout="0, GPU-aaa\n1, GPU-bbb\n",
+                                        stderr="")
+            return CompletedProcess([], 0, stdout="GPU-aaa, 284\n", stderr="")
+
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   side_effect=fake_run), \
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1",
+                                        "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
+
+    def test_gpu_capacity_guard_floor_is_configurable(self):
         from subprocess import CompletedProcess
         with patch("comparison_models.common.training_utils.subprocess.run",
                    return_value=CompletedProcess([], 0,
-                                                 stdout="GPU-abc, 284\n",
+                                                 stdout="0, 5000, 12288\n",
+                                                 stderr="")), \
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0",
+                                        "BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": "6000"}):
+            with self.assertRaisesRegex(RuntimeError, "6000 MiB"):
+                require_gpu_capacity()
+
+    def test_gpu_capacity_guard_can_be_overridden(self):
+        from subprocess import CompletedProcess
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   return_value=CompletedProcess([], 0,
+                                                 stdout="0, 1, 12288\n",
                                                  stderr="")), \
                 patch.dict(os.environ,
-                           {"BIRD_HKE_SKIP_IDLE_GPU_CHECK": "1"}):
-            require_idle_gpu()
+                           {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "1"}):
+            require_gpu_capacity()
 
-    def test_gpu_busy_guard_fails_closed_without_nvidia_smi(self):
-        import subprocess as sp
+    def test_gpu_capacity_guard_falls_back_to_torch_without_nvidia_smi(self):
+        """Hosts whose driver ships without nvidia-smi must still be usable."""
         with patch("comparison_models.common.training_utils.subprocess.run",
                    side_effect=FileNotFoundError("nvidia-smi")), \
-                patch.dict(os.environ, {"BIRD_HKE_SKIP_IDLE_GPU_CHECK": ""}):
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      return_value=(40 * 2 ** 30, 48 * 2 ** 30)), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": "",
+                                        "BIRD_HKE_GPU_MIN_FREE_MIB": ""}):
+            require_gpu_capacity()
+
+    def test_gpu_capacity_guard_fails_closed_without_any_probe(self):
+        with patch("comparison_models.common.training_utils.subprocess.run",
+                   side_effect=FileNotFoundError("nvidia-smi")), \
+                patch("comparison_models.common.training_utils.torch.cuda.mem_get_info",
+                      side_effect=RuntimeError("no CUDA device")), \
+                patch.dict(os.environ, {"BIRD_HKE_SKIP_GPU_CAPACITY_CHECK": ""}):
             with self.assertRaisesRegex(RuntimeError,
-                                        "Cannot verify GPU is idle"):
-                require_idle_gpu()
+                                        "Cannot read GPU memory state"):
+                require_gpu_capacity()
 
     def test_best_checkpoint_recovery_keeps_previous_slot(self):
         work = Path(tempfile.mkdtemp(prefix="vitpose-best-slots-"))
