@@ -22,7 +22,8 @@ try:
     from comparison_models.vitpose.train import ViTPoseBTrainer
     from comparison_models.common.losses import masked_heatmap_mse
     from comparison_models.common.training_utils import (
-        require_gpu_capacity, refresh_best_alias, recover_history,
+        WORKERS_ENV, dataloader_workers, make_epoch_loader,
+        recover_history, refresh_best_alias, require_gpu_capacity,
     )
     from comparison_models.common.preflight import sha256
     HAS_DEPS = True
@@ -375,6 +376,53 @@ class ViTPoseProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(loss.item(), 0.5)
         loss.backward()
         self.assertEqual(float(p.grad[0, 2].abs().sum()), 0.)
+
+
+class DataloaderWorkerTests(unittest.TestCase):
+    """FD is decode-bound, so the worker count is a documented knob."""
+
+    RECIPE = {"seed": 2026, "microbatch": 2}
+
+    def test_default_is_capped(self):
+        with patch.dict(os.environ, {WORKERS_ENV: ""}), \
+                patch("comparison_models.common.training_utils.os.cpu_count",
+                      return_value=64):
+            self.assertEqual(dataloader_workers(), 8)
+        with patch.dict(os.environ, {WORKERS_ENV: ""}), \
+                patch("comparison_models.common.training_utils.os.cpu_count",
+                      return_value=3):
+            self.assertEqual(dataloader_workers(), 3)
+
+    def test_explicit_override_is_honoured(self):
+        with patch.dict(os.environ, {WORKERS_ENV: "14"}):
+            self.assertEqual(dataloader_workers(), 14)
+        with patch.dict(os.environ, {WORKERS_ENV: "0"}):
+            self.assertEqual(dataloader_workers(), 0)
+
+    def test_bad_override_refuses(self):
+        for value in ("many", "-1"):
+            with patch.dict(os.environ, {WORKERS_ENV: value}):
+                with self.assertRaises(RuntimeError):
+                    dataloader_workers()
+
+    def test_loader_uses_the_resolved_worker_count(self):
+        dataset = torch.utils.data.TensorDataset(
+            torch.zeros(8), torch.zeros(8))
+        with patch.dict(os.environ, {WORKERS_ENV: "2"}):
+            loader = make_epoch_loader(self.RECIPE, dataset, 1, train=True)
+        self.assertEqual(loader.num_workers, 2)
+        self.assertEqual(loader.prefetch_factor, 4)
+        # Workers survive across epochs only by freezing the augmentation
+        # stream, which the per-epoch sampler/worker seeds forbid.
+        self.assertFalse(loader.persistent_workers)
+
+    def test_single_process_loader_drops_the_prefetch_factor(self):
+        dataset = torch.utils.data.TensorDataset(
+            torch.zeros(8), torch.zeros(8))
+        with patch.dict(os.environ, {WORKERS_ENV: "0"}):
+            loader = make_epoch_loader(self.RECIPE, dataset, 1, train=True)
+        self.assertEqual(loader.num_workers, 0)
+        self.assertIsNone(loader.prefetch_factor)
 
 
 if __name__ == "__main__":

@@ -229,7 +229,39 @@ def runtime_fingerprint() -> dict:
         "opencv": cv2.__version__,
         "device": torch.cuda.get_device_name(0),
         "device_capability": list(torch.cuda.get_device_capability(0)),
+        # Worker count feeds the augmentation RNG stream (each worker is
+        # seeded from the loader seed plus its id), so it is part of the
+        # reproducibility contract and resume refuses if it changed.
+        "dataloader_workers": dataloader_workers(),
     }
+
+
+WORKERS_ENV = "BIRD_HKE_NUM_WORKERS"
+DEFAULT_MAX_WORKERS = 8
+PREFETCH_FACTOR = 4
+
+
+def dataloader_workers():
+    """Decode/augment workers per loader.
+
+    Every sample is a full-resolution ``cv2.imread`` plus an affine warp and a
+    heatmap rasterisation, so a single worker tops out well below what either
+    ViT can consume -- two workers left the GPU starved and the FD scenario
+    (77,740 train images) is entirely decode-bound. The count is recorded in
+    the run manifest because it changes the augmentation RNG stream: each
+    worker is seeded from the loader's base seed plus its own id, so a run is
+    only reproducible at the same worker count.
+    """
+    override = os.environ.get(WORKERS_ENV, "").strip()
+    if override:
+        try:
+            workers = int(override)
+        except ValueError:
+            raise RuntimeError(f"{WORKERS_ENV} must be an integer, got {override!r}")
+        if workers < 0:
+            raise RuntimeError(f"{WORKERS_ENV} must be >= 0, got {workers}")
+        return workers
+    return min(DEFAULT_MAX_WORKERS, os.cpu_count() or 1)
 
 
 def make_epoch_loader(recipe, dataset, epoch, *, train):
@@ -238,11 +270,18 @@ def make_epoch_loader(recipe, dataset, epoch, *, train):
     sampler_gen = torch.Generator().manual_seed(seed)
     worker_gen = torch.Generator().manual_seed(seed + 29)
     sampler = RandomSampler(dataset, generator=sampler_gen) if train else None
+    workers = dataloader_workers()
     return DataLoader(
         dataset, batch_size=recipe["microbatch"],
         sampler=sampler, shuffle=False, drop_last=False,
-        num_workers=2, pin_memory=True,
-        generator=worker_gen, persistent_workers=False,
+        num_workers=workers, pin_memory=True,
+        generator=worker_gen,
+        # Must stay False: a worker's RNG is seeded from the base seed drawn
+        # off this loader's generator, and the loader is rebuilt every epoch
+        # with an epoch-specific seed. Keeping workers alive across epochs
+        # would freeze the augmentation stream.
+        persistent_workers=False,
+        prefetch_factor=PREFETCH_FACTOR if workers > 0 else None,
     )
 
 

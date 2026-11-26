@@ -61,6 +61,46 @@ filtered results shown separately using fixed filter parameters for every
 model. Image-validation PCK is a training diagnostic only. Bootstrap
 uncertainty must resample video sequences, not frames.
 
+## Launching the definitive runs
+
+`comparison_models/scripts/run_definitive_training.sh` starts the runs in
+parallel *lanes* — one lane per GPU, sequential inside a lane, each lane in its
+own tmux window. FD is the wall-clock bottleneck (77,740 train images), so the
+intended layout keeps FD alone on the fastest card and shares a second card
+between the ~4x smaller OS and CS runs:
+
+```bash
+export VITPOSE_ENV_PREFIX=$HOME/venvs/vitpose-b-cu128-venv
+export POSEBH_ENV_PREFIX=$HOME/venvs/posebh-b-cu128-venv
+export PYTHONPATH=$PWD
+
+bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 8 \
+    1=vitpose-b:FD posebh-b:FD \
+    0=vitpose-b:OS posebh-b:OS vitpose-b:CS posebh-b:CS
+```
+
+Drop `--dry-run` to launch. The script runs `cli preflight` for every requested
+run *before* touching tmux, skips any run whose `final_model.pth` already
+exists, and never overwrites one. `--status` reports DONE/PARTIAL/PENDING for
+all nine runs. An interrupted run is resumed with
+`python -m comparison_models.cli resume --model M --scenario S`.
+
+### Decode workers
+
+Every BirdGaze sample is a full-resolution `cv2.imread` plus an affine warp and
+a heatmap rasterisation, so training is decode-bound rather than GPU-bound: at
+two workers an H100 PCIe sat at ~25 img/s for PoseBH-B while peaking at 2 GiB
+of memory. The default is now `min(8, cpu_count)`, overridable per machine with
+`BIRD_HKE_NUM_WORKERS`. Keep `lanes x workers` below the core count — the
+launcher warns when it is not, because oversubscribed decoders slow every run
+on the machine down at once.
+
+The worker count is part of the reproducibility contract: each worker is seeded
+from the loader's base seed plus its own id, so changing it changes the
+augmentation stream. It is therefore recorded in `runtime_fingerprint()` inside
+the run manifest, and `--resume` refuses if it differs from the value the run
+started with. Fix the count for a given run before the first epoch.
+
 ## Status and open gates
 
 | Item | Status |
