@@ -36,16 +36,17 @@ A unit test checks both forward output and backward gradient parity against
   wheels in **read-only** system site-packages. No installation into the
   original Bird_HKE environment. No MMCV, MMPose or new CUDA downloads.
 - The launcher checks that the GPU assigned to it has enough **free memory**
-  (at least 4 GiB by default) before allocating anything. Other processes
-  sharing that card are reported but allowed: both ViTPose-B and PoseBH-B peak
-  at roughly 2 GiB, so several runs can share one GPU, and determinism comes
-  from the per-process RNG and fixed batch order rather than exclusive access.
+  (at least 4 GiB by default) before allocating anything. The measurement comes
+  from `torch.cuda.mem_get_info`, so it always describes the card this process
+  actually got, and no `nvidia-smi` is required. Other processes sharing that
+  card are reported but allowed: both ViTPose-B and PoseBH-B peak at roughly
+  2 GiB, so several runs can share one GPU, and determinism comes from the
+  per-process RNG and fixed batch order rather than exclusive access.
   A colleague using a *different* card never blocks the run. This is a
   pre-start check, not a scheduler — **plan co-tenancy deliberately**, since a
   job starting later can still consume the memory. Override the floor with
   `BIRD_HKE_GPU_MIN_FREE_MIB`, or skip the check entirely with
-  `BIRD_HKE_SKIP_GPU_CAPACITY_CHECK=1` on hosts where `nvidia-smi` is
-  unavailable (some login nodes ship the driver without the monitoring tool).
+  `BIRD_HKE_SKIP_GPU_CAPACITY_CHECK=1`.
 - It checks a pinned clean upstream ViTPose checkout and compares the
   official *single-task* backbone config, never fetching pretrained weights.
 - It fingerprints the source and converted FD/OS/CS annotations, upstream
