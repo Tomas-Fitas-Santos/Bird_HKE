@@ -76,6 +76,11 @@ def _base_env(model: ComparisonModel) -> dict:
     env["BIRD_HKE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPATH"] = os.pathsep.join(
         (str(ROOT), env.get("PYTHONPATH", "")))
+    if model.requires_mmpose:
+        upstream = ROOT / ".external_pose_sources" / "rtmpose"
+        overlay = ROOT / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
+        env["PYTHONPATH"] = os.pathsep.join(
+            (str(overlay), str(ROOT), str(upstream), env.get("PYTHONPATH", "")))
     return env
 
 
@@ -209,7 +214,7 @@ def cmd_test(args) -> int:
                 continue
             if model.requires_mmpose:
                 argv = [str(interpreter), "-m", model.smoke_module,
-                        "--mode", "gpu"]
+                        "--scenario", scenario, "--check-only"]
             else:
                 argv = [str(interpreter), "-m", model.smoke_module,
                         "--scenario", scenario, "--smoke-test"]
