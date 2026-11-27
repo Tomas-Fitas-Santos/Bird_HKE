@@ -33,6 +33,12 @@ class SerializedPreflightSelectionTests(unittest.TestCase):
         self.assertEqual(find_sample_with_flag(dataset, "birdgaze_negative_scale"), 1)
         self.assertEqual(find_sample_with_flag(dataset, "birdgaze_zero_scale"), 2)
 
+    def test_scenario_registry_supports_all(self):
+        from comparison_models.registry import COMPARISON_MODELS, SCENARIOS
+        model = COMPARISON_MODELS.models["rtmpose-m"]
+        self.assertEqual(model.scenarios, SCENARIOS)
+        self.assertEqual(model.smoke_module, model.train_module)
+
     def test_absent_flag_is_detected(self):
         self.assertIsNone(
             find_sample_with_flag(SerializedDatasetStub(), "not_present")
