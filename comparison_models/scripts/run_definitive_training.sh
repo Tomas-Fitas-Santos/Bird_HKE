@@ -104,12 +104,21 @@ run_dir_for() {
   printf '%s/%s/%s/seed_2026' "$OUT_ROOT" "$folder" "$scenario"
 }
 
+run_done() {
+  local spec="$1" dir
+  dir="$(run_dir_for "$spec")" || return 1
+  if [[ "$spec" == rtmpose-m:* ]]; then
+    [ -f "$dir/epoch_100.pth" ]
+  else
+    [ -f "$dir/final_model.pth" ]
+  fi
+}
+
 if [ "$STATUS_ONLY" -eq 1 ]; then
   for model in vitpose-b posebh-b rtmpose-m; do
     for scenario in FD OS CS; do
-      case "$model:$scenario" in rtmpose-m:OS|rtmpose-m:CS) continue ;; esac
       dir="$(run_dir_for "$model:$scenario")"
-      if   [ -f "$dir/final_model.pth" ]; then echo "DONE     $model  $scenario  $dir"
+      if   run_done "$model:$scenario"; then echo "DONE     $model  $scenario  $dir"
       elif [ -d "$dir" ];                  then echo "PARTIAL  $model  $scenario  $dir"
       else                                      echo "PENDING  $model  $scenario"
       fi
@@ -130,15 +139,16 @@ DUPES="$(printf '%s\n' "$ALL_SPECS" | sort | uniq -d)"
 # --- pre-flight: refuse before tmux exists, not halfway through a lane ------
 for spec in $ALL_SPECS; do
   model="${spec%%:*}"; scenario="${spec##*:}"
-  case "$spec" in rtmpose-m:OS|rtmpose-m:CS) die "rtmpose-m is only validated for FD" ;; esac
+  case "$model" in rtmpose-m|vitpose-b|posebh-b) ;; *) die "unknown model $model" ;; esac
+  case "$scenario" in FD|OS|CS) ;; *) die "unknown scenario $scenario" ;; esac
   if [ "$DRY_RUN" -eq 0 ]; then
     case "$model" in
       rtmpose-m) [ -n "${RTMPOSE_ENV_PREFIX:-}" ] || die "RTMPOSE_ENV_PREFIX is not set" ;;
       vitpose-b) [ -n "${VITPOSE_ENV_PREFIX:-}" ] || die "VITPOSE_ENV_PREFIX is not set" ;;
       posebh-b)  [ -n "${POSEBH_ENV_PREFIX:-}" ]  || die "POSEBH_ENV_PREFIX is not set" ;;
     esac
-    if [ -f "$(run_dir_for "$spec")/final_model.pth" ]; then
-      echo "SKIP     $spec -- final_model.pth already exists"
+    if run_done "$spec"; then
+      echo "SKIP     $spec -- completed checkpoint already exists"
       continue
     fi
     echo "--- preflight $spec ---"
@@ -177,12 +187,14 @@ for i in "${!LANE_GPU[@]}"; do
   [ -z "${LD_LIBRARY_PATH:-}" ] || printf 'export LD_LIBRARY_PATH=%q\n' "$LD_LIBRARY_PATH" >> "$lane"
   for spec in ${LANE_SPECS[$i]}; do
     model="${spec%%:*}"; scenario="${spec##*:}"
-    [ -f "$(run_dir_for "$spec")/final_model.pth" ] && continue
+    run_done "$spec" && continue
     {
       echo "echo '=== $spec on GPU $gpu workers=$WORKERS start='\$(date -Is)"
       echo "CUDA_VISIBLE_DEVICES=$gpu BIRD_HKE_NUM_WORKERS=$WORKERS \\"
       echo "  $PYTHON -m comparison_models.cli train --model $model --scenario $scenario"
-      echo "echo '=== $spec rc='\$?' end='\$(date -Is)"
+      echo 'rc=$?'
+      echo "echo '=== $spec rc='\$rc' end='\$(date -Is)"
+      echo '[ "$rc" -eq 0 ] || exit "$rc"'
     } >> "$lane"
   done
   [ -s "$lane" ] || { rm -f "$lane"; continue; }
