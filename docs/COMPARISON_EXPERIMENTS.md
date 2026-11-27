@@ -65,23 +65,28 @@ uncertainty must resample video sequences, not frames.
 
 `comparison_models/scripts/run_definitive_training.sh` starts the runs in
 parallel *lanes* — sequential inside a lane, concurrent across lanes, one tmux
-window each. Several lanes may name the same GPU, which is what makes the
-FD-first layout work: both models peak near 2 GiB, so the two FD runs share the
-fast card while the ~4x smaller OS and CS runs occupy another.
+window each. Several lanes may name the same GPU, but an FD run should have a
+card to itself: both models peak near 2 GiB so they *fit* together, yet sharing
+a card halves each run's rate, and FD is what sets the wall clock. The layout
+for the four available cards is in
+[`comparison_models/scripts/GPU_PLACEMENT.md`](../comparison_models/scripts/GPU_PLACEMENT.md).
 
 ```bash
 export VITPOSE_ENV_PREFIX=$HOME/venvs/vitpose-b-cu128-venv
 export POSEBH_ENV_PREFIX=$HOME/venvs/posebh-b-cu128-venv
 export PYTHONPATH=$PWD
 
-# machine with the fast card: the two FD runs, one lane each so they overlap
+# each FD run alone on its own card
 bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 8 \
-    1=vitpose-b:FD 1=posebh-b:FD
+    1=vitpose-b:FD 0=posebh-b:FD
 
-# the other machine: OS and CS, two runs per card
-bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 4 \
-    1=vitpose-b:OS vitpose-b:CS 0=posebh-b:OS posebh-b:CS
+# the other machine: OS and CS, four small runs in one sequential lane
+bash comparison_models/scripts/run_definitive_training.sh --dry-run --workers 6 \
+    0=vitpose-b:OS vitpose-b:CS posebh-b:OS posebh-b:CS
 ```
+
+Note that `GPU=` is a **CUDA** index, which on some nodes is the reverse of the
+`nvidia-smi` index; `GPU_PLACEMENT.md` shows how to check.
 
 Drop `--dry-run` to launch. The script runs `cli preflight` for every requested
 run *before* touching tmux, refuses a request that names the same run twice
