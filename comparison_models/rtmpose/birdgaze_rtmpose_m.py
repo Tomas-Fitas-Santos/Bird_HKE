@@ -74,7 +74,7 @@ resume = False
 # EMA, transposed onto the 100-epoch Bird_HKE budget. Only the epoch count
 # (210 -> 100) and the batch size (512 -> 64, see auto_scale_lr below) differ.
 # --------------------------------------------------------------------------
-base_lr = 4e-3
+base_lr = 4e-3 * (64 / 512)  # linear scaling of the upstream effective batch
 weight_decay = 0.05
 total_epochs = 100
 # Upstream warms up for 1000 dataloader iterations and starts the cosine at
@@ -88,6 +88,8 @@ randomness = dict(seed=2026, deterministic=True)
 env_cfg = dict(cudnn_benchmark=False)
 train_batch_size = 8
 val_batch_size = 8
+num_workers = int(os.environ.get("BIRD_HKE_NUM_WORKERS", "4"))
+assert num_workers >= 0
 optim_wrapper = dict(
     type="BirdGazeEpochOptimWrapper",
     images_per_epoch=train_image_count,
@@ -110,7 +112,7 @@ param_scheduler = [
 # effective batch at 64, and MMEngine would derive 8 (the per-process
 # dataloader batch) rather than 64 here because the remaining 8x comes from
 # gradient accumulation inside BirdGazeEpochOptimWrapper. Scaling stays
-# disabled and base_lr above is the paper's value verbatim.
+# disabled; base_lr above is explicitly scaled for effective batch 64.
 auto_scale_lr = dict(enable=False, base_batch_size=512)
 
 # ExpMomentumEMA exactly as configured by the AP-10K recipe. The second
@@ -155,7 +157,7 @@ val_pipeline = [
     dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 train_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=False,
+    batch_size=8, num_workers=num_workers, persistent_workers=False,
     sampler=dict(type="DefaultSampler", shuffle=True),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,
@@ -165,7 +167,7 @@ train_dataloader = dict(
     ),
 )
 val_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=False, drop_last=False,
+    batch_size=8, num_workers=num_workers, persistent_workers=False, drop_last=False,
     sampler=dict(type="DefaultSampler", shuffle=False, round_up=False),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,
