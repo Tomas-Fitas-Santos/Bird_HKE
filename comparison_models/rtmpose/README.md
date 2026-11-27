@@ -53,7 +53,7 @@ The historical sections below are retained for environment troubleshooting.
   `LinearLR` warmup from `1e-5` for 1000 iterations; half-range
   `CosineAnnealingLR` (`eta_min=base_lr*0.05`, iter-based) from epoch 50;
   norm clipping 35; `ExpMomentumEMA` hook (momentum `0.0002`,
-  `update_buffers=True`, `priority=49`); physical microbatch 8 and
+  `update_buffers=True`, `priority=49`); physical microbatch 32 (two gradient-accumulation steps) and
   **effective optimizer batch 64** (one GPU). These follow the AP-10K recipe with an adapted epoch count (210 → 100), batch and linearly scaled LR.
   See [docs/PAPER_FAITHFUL_PROTOCOL.md](../../docs/PAPER_FAITHFUL_PROTOCOL.md).
 - Native coordinate supervision masking, original source crop offset,
