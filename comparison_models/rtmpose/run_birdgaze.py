@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guarded single-GPU RTMPose-M FD training using pinned official MMPose.
+"""Guarded single-GPU RTMPose-M training using pinned official MMPose.
 
 This launcher does not change Git branches or touch native Bird_HKE runs.
 It checks the exact BirdGaze training recipe before creating a work directory,
@@ -96,6 +96,7 @@ def recipe(scenario: str, root: Path, config: Path, dataset: Path) -> dict:
         "seed": 2026,
         "mmpose_source_revision": PINNED_MMPOSE_REVISION,
         "runtime_packages": runtime_versions(),
+        "num_workers": int(os.environ.get("BIRD_HKE_NUM_WORKERS", "4")),
         "files_sha256": {key: sha256(path) for key, path in paths.items()},
     }
 
@@ -128,11 +129,9 @@ def main() -> None:
     modes.add_argument("--retry-start", action="store_true",
                        help="Restart a previously failed run with NO checkpoint")
     modes.add_argument("--check-only", action="store_true",
-                       help="Run real FD data+GPU preflight, create no work dir")
+                       help="Run real scenario data+GPU preflight, create no work dir")
     args = parser.parse_args()
 
-    if args.scenario != "FD":
-        parser.error("Only RTMPose-M FD is validated in this phase")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         parser.error("Only single-process single-GPU training is supported")
     config = ROOT / "comparison_models/rtmpose/birdgaze_rtmpose_m.py"
@@ -165,7 +164,7 @@ def main() -> None:
     overlay = ROOT / ".external_pose_sources" / "rtmpose_birdgaze_overlay"
     env["PYTHONPATH"] = os.pathsep.join(
         (str(overlay), str(ROOT), str(upstream), env.get("PYTHONPATH", "")))
-    print("RTMPose-M FD recipe SHA256:",
+    print(f"RTMPose-M {args.scenario} recipe SHA256:",
           hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest(),
           flush=True)
     print("RTMPose-M CUDA determinism: CUBLAS_WORKSPACE_CONFIG=",
@@ -212,7 +211,7 @@ def main() -> None:
     ]
     if args.resume:
         command.append("--resume")
-    print(f"Starting {'resume' if args.resume else 'new'} RTMPose-M FD run.",
+    print(f"Starting {'resume' if args.resume else 'new'} RTMPose-M {args.scenario} run.",
           "Checkpoint directory:", work, flush=True)
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
