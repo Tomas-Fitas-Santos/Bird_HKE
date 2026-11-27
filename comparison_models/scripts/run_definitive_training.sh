@@ -2,24 +2,27 @@
 # Launches the definitive 100-epoch comparison-model runs in parallel lanes.
 #
 # FD is the wall-clock bottleneck (77,740 train images, each one a
-# full-resolution decode + affine warp), so the intended layout keeps the two
-# FD runs on the fastest card and puts the ~4x smaller OS/CS runs on another.
+# full-resolution decode + affine warp), so the intended layout gives each FD
+# run a card to itself and packs the ~4x smaller OS/CS runs onto another card.
+# See comparison_models/scripts/GPU_PLACEMENT.md for the four-GPU layout and for
+# why a run cannot be moved to a different GPU model once it has started.
 #
 # Usage (from the repository root, on one machine):
 #   bash comparison_models/scripts/run_definitive_training.sh [options] LANE [LANE...]
 #
 # A LANE is  GPU=SPEC [SPEC...]  where SPEC is  model:scenario. Runs inside a
-# lane are sequential; lanes are concurrent, and several lanes may name the
-# same GPU (both models peak near 2 GiB, so they comfortably share a card).
-# Each lane gets its own tmux window.
+# lane are sequential; lanes are concurrent. Several lanes may name the same
+# GPU -- both models peak near 2 GiB, so they fit -- but an FD run should have
+# a card to itself, since sharing halves its rate. Each lane gets its own tmux
+# window.
 #
-#   # both FD runs sharing the H100, one lane each so they overlap
+#   # each FD run alone on its own card
 #   bash comparison_models/scripts/run_definitive_training.sh --workers 8 \
-#       1=vitpose-b:FD 1=posebh-b:FD
+#       1=vitpose-b:FD 0=posebh-b:FD
 #
-#   # on the other machine: OS then CS, sharing one card
-#   bash comparison_models/scripts/run_definitive_training.sh --workers 4 \
-#       1=vitpose-b:OS vitpose-b:CS 0=posebh-b:OS posebh-b:CS
+#   # on the other machine: OS and CS, four small runs in one sequential lane
+#   bash comparison_models/scripts/run_definitive_training.sh --workers 6 \
+#       0=vitpose-b:OS vitpose-b:CS posebh-b:OS posebh-b:CS
 #
 # Options:
 #   --workers N    decode workers per run (default 8). Lanes sharing a machine
@@ -59,7 +62,7 @@ while [ $# -gt 0 ]; do
     --no-tmux) USE_TMUX=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --status)  STATUS_ONLY=1; shift ;;
-    -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 0 ;;
     *=*)
       gpu="${1%%=*}"; rest="${1#*=}"
       case "$gpu" in ''|*[!0-9]*) die "lane GPU must be a number, got '$gpu'" ;; esac
