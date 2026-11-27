@@ -29,10 +29,11 @@ def build_cfg(root):
         raise RuntimeError("Pretrained weights are not allowed in this comparison")
     if cfg.model.head.out_channels != 4:
         raise RuntimeError("Expected four keypoints")
-    if cfg.optim_wrapper.accumulative_counts != 8:
+    if cfg.train_dataloader.batch_size != 32 or cfg.val_dataloader.batch_size != 32:
+        raise RuntimeError("Expected train and validation microbatch 32")
+    if (cfg.optim_wrapper.microbatch_size != 32
+            or cfg.optim_wrapper.accumulative_counts != 2):
         raise RuntimeError("Expected effective batch 64 on one GPU")
-    if cfg.train_dataloader.batch_size != 8:
-        raise RuntimeError("Unexpected microbatch size")
     if cfg.train_cfg.max_epochs != 100:
         raise RuntimeError("Expected a 100-epoch run")
     # The actual Runner constructs val_evaluator before epoch 1. Guard that
@@ -175,34 +176,52 @@ def check_gpu(cfg, collected):
     model = model.cuda()
     model.train()
 
-    examples = collected["train"][1]
-    # Real samples from the selected scenario, including unusual scales when present.
-    batch = pseudo_collate(examples)
-    batch = model.data_preprocessor(batch, training=True)
-    losses = model.forward(
-        batch["inputs"], batch["data_samples"], mode="loss")
-    poseloss = losses.get("loss_kpt")
-    if poseloss is None or not torch.isfinite(poseloss).all():
-        raise RuntimeError(f"RTMPose SimCC loss missing/nonfinite: {losses}")
-    # Use the real config's optimizer settings so the preflight exercises the
-    # same lr/weight decay the MMEngine runner will use.
-    opt_cfg = dict(cfg.optim_wrapper.optimizer)
-    opt_cfg.pop("type", None)
-    opt = torch.optim.AdamW(model.parameters(), **opt_cfg)
-    opt.zero_grad(set_to_none=True)
-    poseloss.backward()
-    grads = [
-        p.grad for p in model.parameters()
-        if p.requires_grad and p.grad is not None
-    ]
-    if not grads or not all(torch.isfinite(g).all() for g in grads):
-        raise RuntimeError("Missing/nonfinite RTMPose gradients")
-    opt.step()
-    print("Real scenario train forward/backward/optimizer step: PASS",
-          "loss=", poseloss.item(), flush=True)
+    from mmengine.optim import build_optim_wrapper
+    from copy import deepcopy
+    from math import ceil
+
+    train_ds, special = collected["train"]
+    microbatch = cfg.train_dataloader.batch_size
+    accum = cfg.optim_wrapper.accumulative_counts
+    if len(train_ds) < microbatch * accum:
+        raise RuntimeError("Too few real samples for full effective-batch preflight")
+    wrapper = build_optim_wrapper(model, deepcopy(cfg.optim_wrapper))
+    wrapper.initialize_count_status(model, 0, ceil(len(train_ds) / microbatch))
+    wrapper.zero_grad()
+    torch.cuda.reset_peak_memory_stats()
+    for step in range(accum):
+        # Exercise unusual scale records and a complete physical batch.
+        examples = list(special) if step == 0 else []
+        examples.extend(train_ds[i] for i in
+                        range(step * microbatch, (step + 1) * microbatch - len(examples)))
+        batch = model.data_preprocessor(pseudo_collate(examples), training=True)
+        losses = model.forward(batch["inputs"], batch["data_samples"], mode="loss")
+        poseloss = losses.get("loss_kpt")
+        if poseloss is None or not torch.isfinite(poseloss).all():
+            raise RuntimeError(f"RTMPose SimCC loss missing/nonfinite: {losses}")
+        wrapper.backward(wrapper.scale_loss(poseloss))
+        grads = [p.grad for p in model.parameters() if p.requires_grad and p.grad is not None]
+        if not grads or not all(torch.isfinite(g).all() for g in grads):
+            raise RuntimeError("Missing/nonfinite RTMPose gradients")
+        if wrapper.should_update() != (step == accum - 1):
+            raise RuntimeError("Incorrect gradient accumulation boundary")
+        if wrapper.should_update():
+            wrapper.step()
+            wrapper.zero_grad()
+        print(f"Microbatch {step + 1}/{accum}: {len(examples)} images, loss={poseloss.item()}",
+              flush=True)
+        del examples, batch, losses, poseloss, grads
+    torch.cuda.synchronize()
+    print(f"Real effective-batch optimizer step: PASS (microbatch={microbatch}, "
+          f"effective_batch={microbatch * accum}, "
+          f"peak_allocated_MiB={torch.cuda.max_memory_allocated() / 1024**2:.1f}, "
+          f"peak_reserved_MiB={torch.cuda.max_memory_reserved() / 1024**2:.1f})", flush=True)
 
     model.eval()
-    val_items = collected["val"][1]
+    val_ds, special = collected["val"]
+    val_items = list(special)
+    val_items.extend(val_ds[i] for i in range(
+        min(len(val_ds), cfg.val_dataloader.batch_size - len(val_items))))
     val_batch = pseudo_collate(val_items)
     val_batch = model.data_preprocessor(val_batch, training=False)
     flags = ("birdgaze_negative_scale", "birdgaze_zero_scale")
