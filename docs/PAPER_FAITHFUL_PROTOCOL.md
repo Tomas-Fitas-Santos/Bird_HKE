@@ -28,7 +28,7 @@ re-checked.
 | Setting | RTMPose-M paper | RTMPose-M here | ViTPose-B paper | ViTPose-B here | PoseBH-B paper | PoseBH-B here |
 |---|---|---|---|---|---|---|
 | Optimizer | AdamW | AdamW | AdamW | AdamW | AdamW | AdamW |
-| Base LR | `4e-3` | `4e-3` | `5e-4` | `5e-4` | `1e-3` | `1e-3` |
+| Base LR | `4e-3` | `5e-4` (scaled 64/512) | `5e-4` | `5e-4` | `1e-3` | `1e-3` |
 | Betas | `(0.9, 0.999)` | `(0.9, 0.999)` | `(0.9, 0.999)` | `(0.9, 0.999)` | `(0.9, 0.999)` | `(0.9, 0.999)` |
 | Weight decay | `0.05` | `0.05` | `0.1` | `0.1` | `0.1` | `0.1` |
 | Decay exemptions | `norm_decay_mult=0`, `bias_decay_mult=0`, `bypass_duplicate=True` | same | 1-D / `.bias` / `pos_embed` exempt | same | 1-D / `.bias` / `pos_embed` exempt | same |
@@ -41,7 +41,7 @@ re-checked.
 | AMP | TF32 off, no fp16 loss scale | same | none | fp16 dynamic GradScaler | `fp16 loss_scale init_scale=16384.0` | `grad_scaler_init_scale=16384.0` |
 | Gradient clip order | unscale → clip → step | same | unscale → clip → step | same | unscale → clip → step | same |
 | Epochs | 210 | **100** (exempt) | 210 | **100** (exempt) | 100 | 100 |
-| Effective batch | 512 (64 × 8 GPUs) | **64** (see below) | 512 (64 × 8 GPUs) | **64** | 1024 (128 × 8 GPUs) | **64** |
+| Effective batch | 512 (64 × 8 GPUs) | **64** (32 × 2 accumulation steps) | 512 (64 × 8 GPUs) | **64** | 1024 (128 × 8 GPUs) | **64** |
 | Seed | `21` (explicit in the config) | `2026` (Bird_HKE-wide) | upstream default | `2026` | upstream default | `2026` |
 
 ## Where the implementation lives
@@ -87,7 +87,7 @@ baselines comparable with each other and with the native research models.
 | Deviation | Why |
 |---|---|
 | **100 epochs** for all three models | Explicitly exempted by the study protocol; the paper schedules are rescaled to it rather than dropped. |
-| **Effective batch 64** on one GPU (upstream 512/1024) | The handoff fixes one optimizer batch for every comparison model so the runs are directly comparable and fit a single GPU. `auto_scale_lr` is therefore disabled for RTMPose and `base_lr` is used verbatim instead of being linearly scaled. |
+| **Effective batch 64** on one GPU (upstream 512/1024) | The handoff fixes one optimizer batch for every comparison model so the runs are directly comparable and fit a single GPU. `auto_scale_lr` is disabled for RTMPose because it does not account for gradient accumulation; the upstream LR and cosine floor are explicitly scaled by 64/512. |
 | **Bird_HKE augmentation** (clipped-normal scale/rotation, eye-swap on horizontal flip, signed/zero crop-scale handling) instead of each paper's own pipeline | Shared preprocessing is the whole point of the comparison; per-model augmentation would confound architecture with augmentation. Consequences: RTMPose's two-stage `PipelineSwitchHook` (stage 2 at epoch 180 of 210) has no second stage to switch to and is not used, and ViTPose's COCO `HalfBody`/`urandom` translation and scale ranges do not apply to BirdGaze crops. |
 | **Random initialisation, no pretrained weights** | Bird_HKE compares architectures trained from scratch on BirdGaze. Runtime guards reject pretrained initialization: `init_cfg=None` for the RTMPose backbone, `backbone.pretrained is None` in both recipes, and an assertion in the PoseBH trainer. |
 | **Seed 2026** everywhere | Bird_HKE-wide reproducibility convention. |

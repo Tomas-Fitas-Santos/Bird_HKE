@@ -88,7 +88,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_scenarios_are_shared(self):
         self.assertEqual(SCENARIOS, ("FD", "OS", "CS"))
-        self.assertEqual(COMPARISON_MODELS.models["rtmpose-m"].scenarios, ("FD",))
+        self.assertEqual(COMPARISON_MODELS.models["rtmpose-m"].scenarios, SCENARIOS)
 
 
 class LayoutTests(unittest.TestCase):

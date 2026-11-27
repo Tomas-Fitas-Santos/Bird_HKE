@@ -74,7 +74,7 @@ resume = False
 # EMA, transposed onto the 100-epoch Bird_HKE budget. Only the epoch count
 # (210 -> 100) and the batch size (512 -> 64, see auto_scale_lr below) differ.
 # --------------------------------------------------------------------------
-base_lr = 4e-3
+base_lr = 4e-3 * (64 / 512)  # linear scaling of the upstream effective batch
 weight_decay = 0.05
 total_epochs = 100
 # Upstream warms up for 1000 dataloader iterations and starts the cosine at
@@ -86,13 +86,17 @@ max_epochs = total_epochs
 train_cfg = dict(max_epochs=total_epochs, val_interval=10)
 randomness = dict(seed=2026, deterministic=True)
 env_cfg = dict(cudnn_benchmark=False)
-train_batch_size = 8
-val_batch_size = 8
+train_batch_size = 32
+val_batch_size = 32
+effective_batch_size = 64
+assert effective_batch_size % train_batch_size == 0
+num_workers = int(os.environ.get("BIRD_HKE_NUM_WORKERS", "4"))
+assert num_workers >= 0
 optim_wrapper = dict(
     type="BirdGazeEpochOptimWrapper",
     images_per_epoch=train_image_count,
-    microbatch_size=8,
-    accumulative_counts=8,
+    microbatch_size=train_batch_size,
+    accumulative_counts=effective_batch_size // train_batch_size,
     optimizer=dict(type="AdamW", lr=base_lr, weight_decay=weight_decay),
     paramwise_cfg=dict(norm_decay_mult=0, bias_decay_mult=0,
                        bypass_duplicate=True),
@@ -107,10 +111,10 @@ param_scheduler = [
 ]
 # The AP-10K recipe trains 64 images per GPU on 8 GPUs and opts into
 # MMEngine's linear scaling with base_batch_size=512. Bird_HKE fixes the
-# effective batch at 64, and MMEngine would derive 8 (the per-process
-# dataloader batch) rather than 64 here because the remaining 8x comes from
+# effective batch at 64, and MMEngine would derive 32 (the per-process
+# dataloader batch) rather than 64 here because the remaining 2x comes from
 # gradient accumulation inside BirdGazeEpochOptimWrapper. Scaling stays
-# disabled and base_lr above is the paper's value verbatim.
+# disabled; base_lr above is explicitly scaled for effective batch 64.
 auto_scale_lr = dict(enable=False, base_batch_size=512)
 
 # ExpMomentumEMA exactly as configured by the AP-10K recipe. The second
@@ -155,7 +159,7 @@ val_pipeline = [
     dict(type="PackPoseInputs", meta_keys=pack_meta_keys),
 ]
 train_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=False,
+    batch_size=train_batch_size, num_workers=num_workers, persistent_workers=False,
     sampler=dict(type="DefaultSampler", shuffle=True),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,
@@ -165,7 +169,7 @@ train_dataloader = dict(
     ),
 )
 val_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=False, drop_last=False,
+    batch_size=val_batch_size, num_workers=num_workers, persistent_workers=False, drop_last=False,
     sampler=dict(type="DefaultSampler", shuffle=False, round_up=False),
     dataset=dict(
         type="BirdGazeCocoDataset", metainfo=metainfo, data_root=None,

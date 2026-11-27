@@ -8,7 +8,7 @@ what still has to be verified before any number is reported.
 
 | | FD | OS | CS |
 |---|---|---|---|
-| RTMPose-M | planned | refused by launcher | refused by launcher |
+| RTMPose-M | GPU preflight required | GPU preflight required | GPU preflight required |
 | ViTPose-B | planned | planned | planned |
 | PoseBH-B (single-dataset adaptation) | planned | planned | planned |
 
@@ -22,7 +22,7 @@ what still has to be verified before any number is reported.
 * **Each baseline uses its own paper's optimizer and schedule**, not a shared
   one: ViTPose-B uses AdamW `5e-4`/`0.1` with layer decay 0.75 and step decay at
   epochs 81/95; PoseBH-B uses AdamW `1e-3`/`0.1` with layer decay 0.75 and step
-  decay at epochs 50/90; RTMPose-M uses AdamW `4e-3`/`0.05`, clip 35,
+  decay at epochs 50/90; RTMPose-M uses AdamW `5e-4`/`0.05` (LR scaled by 64/512), clip 35,
   1000-iteration warmup, half-range cosine and `ExpMomentumEMA`. Epoch count is
   the only exempted hyperparameter. See
   [PAPER_FAITHFUL_PROTOCOL.md](./PAPER_FAITHFUL_PROTOCOL.md).
@@ -165,7 +165,7 @@ reproducibility decision, not a free speedup.
 | PoseBH-B trainer | implemented; CPU-tested; **GPU smoke PASSED** (FD, real data) |
 | ViTPose/PoseBH 2-epoch train+validate+resume probe | **PASSED** on GPU for both models |
 | RTMPose-M paper recipe (values, optimizer build, LR trajectory, EMA) | **PASSED** via `comparison_models/rtmpose/verify_paper_recipe.py` |
-| RTMPose-M FD GPU data/model preflight | implemented; **UNVERIFIED** - needs full mmcv |
+| RTMPose-M FD/OS/CS GPU data/model preflight | implemented; new recipe requires validation on Titan with full mmcv |
 | RTMPose-M end-to-end GPU training | **BLOCKED** - no mmcv 2.x build for this torch/CUDA |
 | Any of the nine definitive runs | **not started** |
 

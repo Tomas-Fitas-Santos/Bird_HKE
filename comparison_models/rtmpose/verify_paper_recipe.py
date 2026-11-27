@@ -74,7 +74,7 @@ def check_values(up, ours) -> None:
     print("=== training method: upstream AP-10K vs BirdGaze recipe ===")
     rows = [
         ("optimizer type", up.optim_wrapper.optimizer.type, ours.optim_wrapper.optimizer.type),
-        ("base_lr", up.optim_wrapper.optimizer.lr, ours.optim_wrapper.optimizer.lr),
+        ("base_lr (scaled)", up.optim_wrapper.optimizer.lr * (64 / 512), ours.optim_wrapper.optimizer.lr),
         ("weight_decay", up.optim_wrapper.optimizer.weight_decay,
          ours.optim_wrapper.optimizer.weight_decay),
         ("paramwise_cfg", dict(up.optim_wrapper.paramwise_cfg),
@@ -82,7 +82,7 @@ def check_values(up, ours) -> None:
         ("clip_grad", dict(up.optim_wrapper.clip_grad), dict(ours.optim_wrapper.clip_grad)),
         ("EMA hook", dict(up.custom_hooks[0]), dict(ours.custom_hooks[1])),
         ("warmup", dict(up.param_scheduler[0]), dict(ours.param_scheduler[0])),
-        ("cosine eta_min", up.param_scheduler[1].eta_min, ours.param_scheduler[1].eta_min),
+        ("cosine eta_min (scaled)", up.param_scheduler[1].eta_min * (64 / 512), ours.param_scheduler[1].eta_min),
         ("cosine start fraction", up.param_scheduler[1].begin / up.train_cfg.max_epochs,
          ours.param_scheduler[1].begin / ours.train_cfg.max_epochs),
         ("cosine T_max fraction", up.param_scheduler[1].T_max / up.train_cfg.max_epochs,
