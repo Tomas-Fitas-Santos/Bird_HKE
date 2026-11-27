@@ -21,6 +21,16 @@ class TestRTMPoseEpochAccumulation(unittest.TestCase):
         self.assertEqual(groups[-1], 44)
         self.assertEqual(sum(groups), images)
 
+    def test_microbatch_32_effective_64(self):
+        for images in (77740, 19534, 64, 70):
+            iters = math.ceil(images / 32)
+            groups = [accumulation_group(images, 32, 2, i)[0]
+                      for i in range(iters)
+                      if accumulation_group(images, 32, 2, i)[1]]
+            self.assertEqual(len(groups), math.ceil(images / 64))
+            self.assertEqual(groups[:-1], [64] * (len(groups) - 1))
+            self.assertEqual(sum(groups), images)
+
     def test_partial_microbatch_and_partial_accumulation(self):
         self.assertEqual(accumulation_group(70, 8, 8, 7), (64, True))
         self.assertEqual(accumulation_group(70, 8, 8, 8), (6, True))
