@@ -1,4 +1,4 @@
-# RTMPose-M BirdGaze FD — Phase 3
+# RTMPose-M BirdGaze FD, OS and CS
 
 > **Titan installation route (2026-11-03).** Titan has RTX 3090 (SM 8.6),
 > an existing working PyTorch 2.7.0+cu128 environment, and matching
@@ -15,10 +15,30 @@
 > mode may use considerable CPU/RAM, but avoids re-downloading PyTorch/CUDA.
 > Keep the build log for troubleshooting.
 
-This is the **first** of the three external architectures to be integrated.
-The implementation is committed to the existing `phase-3-passive-uncertainty`
-branch; no parallel setup branch is used. Do not start definitive training
-until the actual Titan data/GPU preflight passes.
+The unified comparison CLI supports all three scenarios. The historical instructions below document the original FD setup; do not use the historical branch pull commands for the definitive paper-based runs. Do not start training before GPU preflight passes.
+
+## Current unified workflow (Titan)
+
+Reuse the working RTMPose overlay environment, without rebuilding it.
+From the repository root on the integrated branch:
+
+```bash
+export RTMPOSE_ENV_PREFIX=/home/students/conda-envs/rtmpose-torch27-venv
+export COMPARISON_CLI_PYTHON="$RTMPOSE_ENV_PREFIX/bin/python"
+export BIRD_HKE_NUM_WORKERS=4
+for SC in OS CS FD; do
+  "$COMPARISON_CLI_PYTHON" -m comparison_models.common.birdgaze.conversion --scenario "$SC" || break
+done
+CUDA_VISIBLE_DEVICES=0 "$COMPARISON_CLI_PYTHON" -m comparison_models.cli test --model rtmpose-m --scenario all
+# Only after all checks pass and any previous FD recipe is archived:
+bash comparison_models/scripts/run_definitive_training.sh --workers 4 --session rtmpose-titan 0=rtmpose-m:OS rtmpose-m:CS rtmpose-m:FD
+```
+
+The completed old FD experiment must be preserved in a separate archive before
+launching the revised recipe; the launcher recognizes epoch_100.pth as a completed
+RTMPose run and skips it. All new runs use the same scaled paper-based recipe.
+Resume through the common CLI with the same worker count, on the same GPU.
+The historical sections below are retained for environment troubleshooting.
 
 ## Architecture and study protocol
 
@@ -28,14 +48,13 @@ until the actual Titan data/GPU preflight passes.
 - From scratch: no pretrained weights or externally initialized checkpoint.
 - Input: 256 × 256 RGB; only `BirdGaze_v2/BirdGaze_Full_Dataset/annot/train.json`
   is used for weight updates; `val.json` is for best-checkpoint selection.
-- Train for 100 epochs; seed 2026; AdamW `4e-3` and weight decay `0.05` with
+- Train for 100 epochs; seed 2026; AdamW `5e-4` (upstream `4e-3` scaled by 64/512) and weight decay `0.05` with
   `norm_decay_mult=0`, `bias_decay_mult=0`, `bypass_duplicate=True`;
   `LinearLR` warmup from `1e-5` for 1000 iterations; half-range
   `CosineAnnealingLR` (`eta_min=base_lr*0.05`, iter-based) from epoch 50;
   norm clipping 35; `ExpMomentumEMA` hook (momentum `0.0002`,
   `update_buffers=True`, `priority=49`); physical microbatch 8 and
-  **effective optimizer batch 64** (one GPU). All of these are the AP-10K
-  recipe's values; only the epoch count (210 → 100) and the batch are changed.
+  **effective optimizer batch 64** (one GPU). These follow the AP-10K recipe with an adapted epoch count (210 → 100), batch and linearly scaled LR.
   See [docs/PAPER_FAITHFUL_PROTOCOL.md](../../docs/PAPER_FAITHFUL_PROTOCOL.md).
 - Native coordinate supervision masking, original source crop offset,
   eye-swap under horizontal flip, clipped-normal scale/rotation augmentation,
