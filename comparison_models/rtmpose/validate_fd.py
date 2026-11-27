@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only RTMPose-M FD data audit and disposable GPU training preflight.
+"""Read-only RTMPose-M scenario data audit and disposable GPU training preflight.
 
 The GPU mode does a fresh model initialization, real-data forward/backward,
 optimizer step, and validation inference IN MEMORY. It never calls the
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def build_cfg(root):
-    os.environ["BIRDGAZE_SCENARIO"] = "FD"
+    os.environ.setdefault("BIRDGAZE_SCENARIO", "FD")
     os.environ["BIRD_HKE_REPO_ROOT"] = str(root)
     from mmpose.utils import register_all_modules as register_mmpose
     from mmengine.config import Config
@@ -70,10 +70,11 @@ def check_data(cfg, root):
     import torch
     from mmpose.registry import DATASETS
     collected = {}
+    scenario = os.environ.get("BIRDGAZE_SCENARIO", "FD")
     for split in ("train", "val"):
         dcfg = cfg.train_dataloader.dataset if split == "train" else cfg.val_dataloader.dataset
         ds = DATASETS.build(dcfg)
-        path = root / "comparison_models/generated/FD" / f"{split}_coco.json"
+        path = root / "comparison_models/generated" / scenario / f"{split}_coco.json"
         with path.open(encoding="utf-8") as f:
             expected = json.load(f)
         if len(ds) != len(expected["images"]):
@@ -81,29 +82,34 @@ def check_data(cfg, root):
                 f"{split}: MMPose loaded {len(ds)} of {len(expected['images'])} images; "
                 "records were lost during COCO filtering"
             )
+        if not len(ds):
+            raise RuntimeError(f"{scenario} {split} dataset is empty")
         indices = [0]
         # FD train contains negative and zero scales; FD validation contains
         # negative scales too. Exercise each unusual affine case directly.
         # Check both the converted COCO flags and their survival through
         # serialized MMPose dataset loading (without turning serialization off).
-        flags = ("birdgaze_negative_scale", "birdgaze_zero_scale") if split == "train" else ("birdgaze_negative_scale",)
+        flags = ("birdgaze_negative_scale", "birdgaze_zero_scale")
         expected_counts = {}
         for flag in flags:
             expected_count = sum(bool(a.get(flag, False)) for a in expected["annotations"])
             if expected_count == 0:
-                raise RuntimeError(
-                    f"FD {split} export has no {flag}; check converter/source data")
+                if scenario == "FD" and (split == "train" or flag == "birdgaze_negative_scale"):
+                    raise RuntimeError(f"{scenario} {split} export unexpectedly lacks {flag}")
+                expected_counts[flag] = 0
+                continue
             match = find_sample_with_flag(ds, flag)
             if match is None:
                 raise RuntimeError(
-                    f"FD {split} COCO export contains {expected_count} {flag} "
+                    f"{scenario} {split} COCO export contains {expected_count} {flag} "
                     f"annotations, but MMPose serialized dataset exposes none")
             record = ds.get_data_info(match)
             if not record.get("raw_ann_info", {}).get(flag, False):
                 raise RuntimeError(
-                    f"FD {split} index {match} lost {flag} in raw annotation")
+                    f"{scenario} {split} index {match} lost {flag} in raw annotation")
             expected_counts[flag] = expected_count
-            indices.append(match)
+            if match not in indices:
+                indices.append(match)
         samples = []
         for i in indices:
             packed = ds[i]
@@ -111,7 +117,7 @@ def check_data(cfg, root):
             for flag in flags:
                 if bool(packed["data_samples"].metainfo.get(flag, False)) != bool(raw.get(flag, False)):
                     raise RuntimeError(
-                        f"FD {split} index {i}: {flag} lost during pipeline packing")
+                        f"{scenario} {split} index {i}: {flag} lost during pipeline packing")
             if tuple(packed["inputs"].shape) != (3, 256, 256):
                 raise RuntimeError(f"Incorrect image dimensions at {split} index {i}")
             annotation = packed["data_samples"].gt_instances.keypoints
@@ -169,8 +175,8 @@ def check_gpu(cfg, collected):
     model = model.cuda()
     model.train()
 
-    examples = collected["train"][1]  # ordinary, negative-scale, zero-scale
-    # Three real FD samples rather than synthetic tensors.
+    examples = collected["train"][1]
+    # Real samples from the selected scenario, including unusual scales when present.
     batch = pseudo_collate(examples)
     batch = model.data_preprocessor(batch, training=True)
     losses = model.forward(
@@ -192,13 +198,16 @@ def check_gpu(cfg, collected):
     if not grads or not all(torch.isfinite(g).all() for g in grads):
         raise RuntimeError("Missing/nonfinite RTMPose gradients")
     opt.step()
-    print("Real FD train forward/backward/optimizer step: PASS",
+    print("Real scenario train forward/backward/optimizer step: PASS",
           "loss=", poseloss.item(), flush=True)
 
     model.eval()
     val_items = collected["val"][1]
     val_batch = pseudo_collate(val_items)
     val_batch = model.data_preprocessor(val_batch, training=False)
+    flags = ("birdgaze_negative_scale", "birdgaze_zero_scale")
+    expected_flags = [{flag: bool(item["data_samples"].metainfo.get(flag, False))
+                       for flag in flags} for item in val_items]
     with torch.no_grad():
         outputs = model.predict(val_batch["inputs"], val_batch["data_samples"])
     if len(outputs) != len(val_items):
@@ -209,8 +218,10 @@ def check_gpu(cfg, collected):
             raise RuntimeError(f"Bad RTMPose validation predictions at {i}: {pred.shape}")
         if not torch.as_tensor(pred).isfinite().all():
             raise RuntimeError(f"Nonfinite RTMPose predictions at {i}")
-    if not outputs[1].metainfo.get("birdgaze_negative_scale", False):
-        raise RuntimeError("Negative-scale validation orientation metadata was lost")
+    for output, expected in zip(outputs, expected_flags):
+        for flag, value in expected.items():
+            if bool(output.metainfo.get(flag, False)) != value:
+                raise RuntimeError(f"Validation metadata was lost: {flag}")
     print("Image validation inference and signed-scale decoding: PASS", flush=True)
 
     # Exercise the SAME metric object and PCK key used by Runner's
@@ -223,7 +234,7 @@ def check_gpu(cfg, collected):
     value = scores.get("birdgaze/PCK")
     if value is None or not math.isfinite(float(value)):
         raise RuntimeError(f"Missing or nonfinite checkpoint PCK: {scores}")
-    print(f"Real FD validation PCK evaluator: PASS birdgaze/PCK={value}",
+    print(f"Real scenario validation PCK evaluator: PASS birdgaze/PCK={value}",
           flush=True)
 
 
@@ -236,7 +247,7 @@ def main():
     samples = check_data(cfg, root)
     if args.mode == "gpu":
         check_gpu(cfg, samples)
-    print(f"RTMPose-M FD {args.mode} preflight: PASS", flush=True)
+    print(f"RTMPose-M {os.environ['BIRDGAZE_SCENARIO']} {args.mode} preflight: PASS", flush=True)
     print("No training run, checkpoints or work directories were modified.", flush=True)
 
 
