@@ -82,7 +82,7 @@ invariants are asserted by tests.
 * `vitpose-b` is the standard single-task ViTPose-B
   (`ViTPose_base_simple_coco_256x192.py`), not ViTPose++.
 * `rtmpose-m` uses the official MMPose implementation with a BirdGaze recipe;
-  only FD is validated in this phase.
+  FD, OS and CS are supported; each definitive run requires GPU preflight.
 
 ## Cross-group rules
 
