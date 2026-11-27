@@ -39,6 +39,16 @@ class SerializedPreflightSelectionTests(unittest.TestCase):
         self.assertEqual(model.scenarios, SCENARIOS)
         self.assertEqual(model.smoke_module, model.train_module)
 
+    def test_cli_dispatches_selected_scenario_through_guarded_launcher(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from comparison_models import cli
+        with patch.object(cli, "interpreter_for", return_value=Path("/fake/python")), \
+                patch.object(cli, "_run", return_value=0) as run:
+            self.assertEqual(cli.main(["test", "--model", "rtmpose-m", "--scenario", "all"]), 0)
+            self.assertEqual([c.args[1][-3:] for c in run.call_args_list],
+                             [["--scenario", sc, "--check-only"] for sc in ("FD", "OS", "CS")])
+
     def test_absent_flag_is_detected(self):
         self.assertIsNone(
             find_sample_with_flag(SerializedDatasetStub(), "not_present")
