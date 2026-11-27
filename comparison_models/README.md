@@ -110,7 +110,7 @@ probe for ViTPose-B and PoseBH-B under the ignored
 `_Training_Probes/` scratch directory (5 GiB free required). Neither script
 launches a 100-epoch run.
 
-**Known gap:** RTMPose-M has a real-data/model GPU preflight
+RTMPose-M supports FD, OS and CS through the shared CLI and launcher. **Known gap:** RTMPose-M has a real-data/model GPU preflight
 (`comparison_models.rtmpose.validate_fd`) but no disposable optimizer/resume
 mini-run harness, because its trainer is the upstream MMEngine runner. Its
 optimizer, schedule and EMA are instead checked by
